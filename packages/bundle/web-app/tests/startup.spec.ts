@@ -141,4 +141,16 @@ describe('web command-line provider', () => {
     expect(observed.readerConfig).toBeUndefined()
     expect(observed.exits).toEqual([1])
   })
+
+  it('publishes an all-interfaces host once --allow-all-interfaces acknowledges the risk', async () => {
+    const { values, observed } = await bootProvider(['--host', '0.0.0.0', '--allow-all-interfaces'])
+    expect(values).toEqual({ host: '0.0.0.0', openBrowser: true, trustedHosts: [] })
+    expect(observed.readerConfig).toEqual({
+      host: '0.0.0.0',
+      openBrowser: true,
+      port: 3080,
+      trustedHosts: [],
+    })
+    expect(observed.exits).toEqual([])
+  })
 })

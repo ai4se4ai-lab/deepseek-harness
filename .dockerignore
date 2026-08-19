@@ -1,0 +1,79 @@
+# Build-context excludes for the deepseek-harness image. Keep in sync with
+# .gitignore for generated paths; this file additionally drops sources the
+# runtime image never needs (tests, docs, tooling) to keep the build context
+# small and the layer cache stable.
+
+# VCS / editor
+.git
+.github
+.vscode
+.vscode-shared
+.cursor
+.cursor-server
+.idea
+*.orig
+
+# Local env / secrets — never baked into the image
+.env
+.env.*
+!.env.example
+CLAUDE.local.md
+
+# Dependencies and build outputs (reinstalled/rebuilt inside the image)
+node_modules
+**/node_modules
+lib
+**/lib
+apps/web/dist
+dist-exe
+**/*.tsbuildinfo
+.pnpm-store
+.cache
+coverage
+.artifacts
+.dsh-build
+.doc-typecheck-*
+.node-next-types-*
+.oxlint-contract-*
+.humanize
+tmp
+.typert-*
+.worktrees
+worktrees
+.agents/worktrees
+
+# Test/session fixtures and generated logs, never runtime inputs
+.storages
+.sessions
+pnpm-debug.log
+
+# Not part of the root pnpm workspace (own package.json, not built or run by `dsh web`)
+examples
+
+# Not needed to build or run the `web` profile. `website/` (128K, no
+# node_modules) stays whole: scripts/project-doc-site.ts is part of the
+# tsc host build and imports website/docs.ts, so trimming that directory by
+# glob is fragile — keep it and rely on `docs` below for the actual bulk
+# (root-level VitePress content source).
+docs
+python
+.agents
+.claude
+BENCHMARK.md
+CONTRIBUTING.md
+CONTRIBUTING.zh.md
+CONTRIBUTING.i18n.yaml
+BRAND_GUIDELINES*.md
+BRAND_GUIDELINES.i18n.yaml
+THIRD_PARTY_NOTICES.md
+README*.md
+*.i18n.yaml
+.gitlab-ci.yml
+.jscpd.json
+knip.json
+lefthook.yml
+.oxlintrc*.json
+.rgignore
+pytest.ini
+
+# deploy/ stays: the Dockerfile COPYs deploy/docker-entrypoint.sh into the image

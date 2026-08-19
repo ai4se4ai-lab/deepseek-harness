@@ -1,0 +1,47 @@
+# Standalone compose file for local development and testing:
+#   docker compose up -d
+#   curl http://localhost:3080/           # dev-only published port, see deploy/README.md
+#
+# For the COMP 370 portal deployment, this service does not run standalone —
+# it joins the portal's existing compose project so NGINX can reach it by
+# service name on a shared internal network. Merge the `deepseek-harness`
+# service and `deepseek-harness-data` volume below into that project's
+# docker-compose.yml, and drop `ports:` (the block also below) once NGINX is
+# proxying: only NGINX may be published to the host in that deployment; see
+# deploy/README.md for the full walkthrough and the auth prerequisite.
+
+services:
+  deepseek-harness:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Stamps client build artifacts with the real source commit instead of
+        # the Dockerfile's placeholder; export it before building, e.g.:
+        #   DSH_CLIENT_COMMIT_HASH=$(git rev-parse HEAD) docker compose build
+        DSH_CLIENT_COMMIT_HASH: ${DSH_CLIENT_COMMIT_HASH:-0000000}
+    image: deepseek-harness:local
+    init: true
+    restart: unless-stopped
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY in .env}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      DSH_TRUSTED_HOST: ${DSH_TRUSTED_HOST:-localhost:3080}
+      DSH_WEB_PORT: "3080"
+    volumes:
+      - deepseek-harness-data:/data
+    # Local/dev convenience only — remove for the portal deployment, where
+    # only NGINX is reachable from outside the internal network.
+    ports:
+      - "3080:3080"
+    expose:
+      - "3080"
+    networks:
+      - comp370
+
+volumes:
+  deepseek-harness-data:
+
+networks:
+  comp370:
+    driver: bridge

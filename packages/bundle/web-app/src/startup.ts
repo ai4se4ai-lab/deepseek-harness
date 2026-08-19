@@ -1,8 +1,9 @@
 /**
  * The web app's command-line provider: it parses the `dsh --profile web` flag
- * family (`--host`, `--port`, `--trusted-host`, `--no-open`) and its `--help`
- * text, then provides the immutable values as {@link WEB_STARTUP_SERVICE}.
- * Ordinary rows inject that service before reading it from lazy config.
+ * family (`--host`, `--port`, `--trusted-host`, `--no-open`,
+ * `--allow-all-interfaces`) and its `--help` text, then provides the
+ * immutable values as {@link WEB_STARTUP_SERVICE}. Ordinary rows inject that
+ * service before reading it from lazy config.
  * @module @deepseek-ai/dsh-web-app/startup
  */
 
@@ -33,6 +34,7 @@ export interface WebStartupValues {
 
 /** The web flag family, as commander parsed it. */
 interface WebOptions {
+  allowAllInterfaces?: boolean
   host?: string
   open: boolean
   port?: string
@@ -52,27 +54,32 @@ function webCommand(): Command {
     .option('--no-open', 'do not open the Web UI in the default browser')
     .option('--port <port>', 'listen port; pass 0 to let the OS pick a free one')
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable)')
+    .option('--allow-all-interfaces', 'required alongside --host 0.0.0.0: acknowledges that this GUI has no login and every reachable client gets full tool execution')
     .addHelpText('after', `
 Examples:
   dsh --profile web                          serve on the composed host and port
   dsh --profile web --no-open                serve without opening a browser
   dsh --profile web --port 8080              serve on another port
+  dsh --profile web --host 0.0.0.0 --allow-all-interfaces --trusted-host app.example.com
+                                              serve on every interface behind a reverse proxy
+                                              that supplies its own authentication; the flag
+                                              only silences the safety check, it adds none
 `)
 }
 
 /**
  * Parse and provide the Web invocation as an ordinary Cordis service. The
- * command's action publishes the flags this invocation named; `--host 0.0.0.0`
- * or a non-numeric `--port` is a usage error, so on rejection (and on `--help`)
- * nothing is provided.
+ * command's action publishes the flags this invocation named; `--host
+ * 0.0.0.0` without `--allow-all-interfaces`, or a non-numeric `--port`, is a
+ * usage error, so on rejection (and on `--help`) nothing is provided.
  * @param ctx - plugin context carrying the command line.
  */
 export function apply(ctx: Context): void {
   const program = webCommand()
   program.action(() => {
     const options = program.opts<WebOptions>()
-    if (options.host === '0.0.0.0') {
-      program.error('error: --host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead')
+    if (options.host === '0.0.0.0' && options.allowAllInterfaces !== true) {
+      program.error('error: --host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead, or pass --allow-all-interfaces to confirm a deployment that authenticates and isolates access itself (e.g. behind a reverse proxy with its own auth)')
     }
     if (options.port !== undefined && !/^\d+$/.test(options.port)) {
       program.error(`error: --port must be a number, got ${JSON.stringify(options.port)}`)
