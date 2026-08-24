@@ -1933,6 +1933,38 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'tenantContext',
+    summary: 'The tenant-identity service (`ctx.tenantContext`).',
+    description: 'The tenant-identity service (`ctx.tenantContext`). Wraps one process-wide `AsyncLocalStorage<string | undefined>` whose store value is the resolved tenant id for the request or connection currently executing. Nothing in this service derives a tenant id from anything except the header value handed to resolveTenant — no session state, no cookie, no connection-local cache — so every entry point that wants tenant scoping must call `resolveTenant` and `run` itself at the point it first sees the trusted header.',
+    methods: [
+      {
+        signature: 'resolveTenant(headers: Record<string, string | string[] | undefined>): string | undefined',
+        description: 'Resolve the tenant id from one request\'s headers. Never throws: an absent header, a duplicated header whose first value fails validation, or a value that does not match the trusted proxy\'s fixed wire shape all resolve to `undefined` — the fail-closed input `run` and every downstream consumer treat as "no tenant", never "default/shared access".',
+        parameters: [{ name: 'headers', description: 'the incoming request\'s (already-lowercased) header map.' }],
+        returns: 'the validated tenant id, or `undefined` when absent or malformed.',
+      },
+      {
+        signature: 'run<T>(tenantId: string | undefined, fn: () => T): T',
+        description: 'Run `fn` with `tenantId` bound to the active async chain for its whole lifetime, including every `await` inside it and every resumption of an async generator started inside it.',
+        parameters: [{ name: 'tenantId', description: 'the resolved tenant id, or `undefined` for no tenant.' }, { name: 'fn', description: 'the operation to run with that tenant bound.' }],
+        returns: '`fn`\'s return value.',
+      },
+      {
+        signature: 'current(): string | undefined',
+        description: 'Read the tenant id bound to the currently executing async chain.',
+        parameters: [],
+        returns: 'the bound tenant id, or `undefined` outside any {@link run} call.',
+      },
+      {
+        signature: 'requireCurrent(): string',
+        description: 'Read the tenant id bound to the currently executing async chain, failing closed when none is bound. Every tenant-enforcing consumer (session scoping, sandbox confinement) calls this instead of current at its point of enforcement, so a missing tenant id is a thrown error at the exact call site that needed it rather than a silently unscoped operation.',
+        parameters: [],
+        returns: 'the bound tenant id.',
+        throws: ['{@link TenantRequiredError} when no tenant id is bound.'],
+      },
+    ],
+  },
+  {
     key: 'terminals',
     summary: 'In-process registry for replaceable PTY backends and exact-Agent sessions.',
     description: 'In-process registry for replaceable PTY backends and exact-Agent sessions.',
@@ -3979,7 +4011,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RpcErrorDetailsMap',
-    declaration: 'export interface RpcErrorDetailsMap {\n    \'bad-request\': {\n        issues: ZodIssue[];\n    };\n    \'cancelled\': {};\n    \'session-not-found\': {\n        sessionId: SessionId;\n    };\n    \'model-unavailable\': {\n        provider: string;\n        model: string;\n    };\n    \'session-conflict\': {\n        sessionId: SessionId;\n        requestedCwd: string;\n        existingCwd?: string;\n    };\n    \'invalid-time-zone\': {\n        value: string;\n    };\n    \'workspace-attach-failed\': {\n        sessionId: SessionId;\n        workspaceId: string;\n    };\n    \'workspace-not-found\': {\n        workspaceId: string;\n    };\n    \'workspace-invalid-path\': {\n        path: string;\n    };\n    \'workspace-name-conflict\': {\n        name: string;\n    };\n    \'workspace-move-invalid\': {\n        workspaceId: string;\n        sessionId: SessionId;\n        beforeSessionId?: SessionId;\n    };\n    \'directory-unreadable\': {\n        path: string;\n    };\n    \'directory-exists\': {\n        path: string;\n    };\n    \'directory-create-failed\': {\n        path: string;\n    };\n    \'directory-picker-unavailable\': {\n        capability: string;\n    };\n    \'agent-preset-read-only\': {\n        agentPreset: string;\n        reason: string;\n    };\n    \'agent-preset-locked\': {\n        sessionId: SessionId;\n        agentPreset: string;\n    };\n    \'agent-preset-conflict\': {\n        sessionId: SessionId;\n        requestedPreset: string;\n        existingPreset?: string;\n    };\n    \'agent-preset-not-found\': {\n        agentPreset: string;\n      /* …truncated — full shape in source */',
+    declaration: 'export interface RpcErrorDetailsMap {\n    \'bad-request\': {\n        issues: ZodIssue[];\n    };\n    \'cancelled\': {};\n    \'session-not-found\': {\n        sessionId: SessionId;\n    };\n    \'model-unavailable\': {\n        provider: string;\n        model: string;\n    };\n    \'session-conflict\': {\n        sessionId: SessionId;\n        requestedCwd: string;\n        existingCwd?: string;\n    };\n    \'invalid-time-zone\': {\n        value: string;\n    };\n    \'workspace-attach-failed\': {\n        sessionId: SessionId;\n        workspaceId: string;\n    };\n    \'workspace-not-found\': {\n        workspaceId: string;\n    };\n    \'workspace-invalid-path\': {\n        path: string;\n    };\n    \'workspace-name-conflict\': {\n        name: string;\n    };\n    \'workspace-move-invalid\': {\n        workspaceId: string;\n        sessionId: SessionId;\n        beforeSessionId?: SessionId;\n    };\n    \'tenant-path-invalid\': {\n        path: string;\n    };\n    \'tenant-required\': {};\n    \'directory-unreadable\': {\n        path: string;\n    };\n    \'directory-exists\': {\n        path: string;\n    };\n    \'directory-create-failed\': {\n        path: string;\n    };\n    \'directory-picker-unavailable\': {\n        capability: string;\n    };\n    \'agent-preset-read-only\': {\n        agentPreset: string;\n        reason: string;\n    };\n    \'agent-preset-locked\': {\n        sessionId: SessionId;\n        agentPreset: string;\n    };\n    \'agent-preset-conflict\': {\n        sessionId: SessionId;\n        requestedPreset: string;\n        existingPrese /* …truncated — full shape in source */',
   },
   {
     name: 'RpcId',

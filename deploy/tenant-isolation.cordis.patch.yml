@@ -1,0 +1,87 @@
+# Tenant-isolation patch layer for the single shared DSH container behind the
+# MindPortalix reverse proxy (see the outer repo's src/services/dsh/dsh-proxy.js,
+# which stamps every proxied request/upgrade with the trusted x-mp-dsh-tenant
+# header this whole layer is keyed on).
+#
+# Deployed as its own `--patch` overlay on the entrypoint's `dsh web`
+# invocation (deploy/docker-entrypoint.sh: `--patch /app/deploy/tenant-isolation.cordis.patch.yml`),
+# NOT by copying into $DSH_HOME/cordis.patch.yml.
+#
+# That second path was the design's original plan (the home-level user patch
+# layer every `dsh --profile <name>` boot loads automatically — see
+# apps/cli/src/profile-boot.ts's homePatchPath()/composeProfile()) and IS
+# real and auto-loaded with no flag, but this repo documents it as a general
+# "machine-local preferences shared by every profile" customization point for
+# a human operator (docs/user/develop/basic/publish.md), not as
+# fork/deployment-owned infrastructure — copying over it unconditionally on
+# every container start would silently discard anything a future operator
+# placed there by hand. `--patch` overlays instead: same auto-load-with-no-extra-step
+# property (baked into this image's entrypoint, no runtime file write), but composed
+# as the LAST layer (bundles, then the profile's own cordis.patch.yml, then the
+# home-level one, then --patch overlays — apps/cli/src/args.ts's `web` command
+# accepts `--patch <path>`, repeatable), so it still wins over everything below
+# it without touching a file that belongs to someone else.
+#
+# IMPORTANT deviation from a naive "override the sandbox row's name" plan:
+# @deepseek-ai/cordis-plugin-include's applyEntryPatches (vendor/include/src/index.ts)
+# rejects an id-targeted override patch whose `name` field differs from the
+# target row's current `name` (logged as a "name mismatch" warning and
+# skipped), and an override that omits `name` never touches it either way —
+# so an id-targeted patch can NEVER swap which plugin package a row loads.
+# Replacing the sandbox provider is therefore disable-the-base-row +
+# insert-a-replacement-row (below), not an in-place rename.
+
+# Tenant identity first: every other row here, and the patched
+# packages/client/connection edges (rpc-host.ts / websocket-downlink.ts /
+# index.ts, each marked // MINDPORTALIX-TENANT-ISOLATION), read
+# ctx.tenantContext.
+- insert:
+    - id: tenant-context
+      name: '@mindportalix/dsh-tenant-context'
+
+    # Wraps ctx.apiProxy.sessions.{create,list,search} and
+    # ctx.apiProxy.workspace.* to clamp every cwd/workspaceId to the caller's
+    # $DSH_HOME/tenants/<tenantId> root. Requires apiProxy + workspaceRegistry,
+    # both already mounted by the base/web-app bundle layers beneath this one.
+    - id: tenant-session-guard
+      name: '@mindportalix/dsh-tenant-session-guard'
+
+# Disable the upstream row (confirmed exact id: `sandbox`,
+# packages/bundle/base/cordis.patch.yml) — its bwrap/Landlock profiles grant
+# read access to the WHOLE container filesystem (packages/sandbox/sandbox-local/src/profiles.ts's
+# `--ro-bind / /` / `readOnly: ['/']`), which is exactly the cross-tenant read
+# path this whole patch layer exists to close.
+- id: sandbox
+  disabled: true
+
+# Mount the tenant-scoped fork in its place. It still registers as
+# `ctx.sandbox` (the Cordis service key comes from the plugin's own
+# SandboxProvider base-class constructor call, not from this row's id), so no
+# other row needs to change. No config: this row's schema defaults
+# (runnerCommand/runnerFailureSignatures/probeTimeoutMs) match the disabled
+# base row's, which also carried none.
+- insert:
+    - id: tenant-sandbox
+      name: '@mindportalix/dsh-tenant-sandbox-local'
+
+# Close the one escalation path this task's session-guard cannot intercept at
+# the RPC layer: session.create's wire payload carries no mode/danger-full-access
+# field at all (packages/host/apiproxy/src/api/sessions.schema.ts) — that mode is
+# reached only by selecting a permission preset
+# (packages/interaction/permission-presets), and once granted it BYPASSES
+# sandbox confinement entirely by upstream design
+# (ConfinedSandboxMode = Exclude<SandboxMode, 'danger-full-access'> in
+# packages/sandbox/sandbox/src/index.ts — confine() is never even called for
+# it). Dropping the preset here — the config-only, in-scope lever — is what
+# actually closes the path for tenants sharing this container; restates the
+# base row's other two presets verbatim (a patch replaces a row's whole
+# `config`, never merges into it).
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask

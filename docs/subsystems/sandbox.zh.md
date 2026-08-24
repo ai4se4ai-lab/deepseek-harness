@@ -217,4 +217,52 @@ overrideOf(session: Session): SandboxMode | undefined
 Types: [Session](session.zh.md)
 
 Source: [`packages/sandbox/sandbox-policy/src/index.ts`](../../packages/sandbox/sandbox-policy/src/index.ts)
+
+<a id="ctxtenantcontext--tenantcontextservice"></a>
+
+### `ctx.tenantContext` — `TenantContextService`
+
+The tenant-identity service (`ctx.tenantContext`). Wraps one process-wide `AsyncLocalStorage<string | undefined>` whose store value is the resolved tenant id for the request or connection currently executing. Nothing in this service derives a tenant id from anything except the header value handed to resolveTenant — no session state, no cookie, no connection-local cache — so every entry point that wants tenant scoping must call `resolveTenant` and `run` itself at the point it first sees the trusted header.
+
+```ts cordis-catalog
+/**
+ * Resolve the tenant id from one request's headers. Never throws: an
+ * absent header, a duplicated header whose first value fails validation, or
+ * a value that does not match the trusted proxy's fixed wire shape all
+ * resolve to `undefined` — the fail-closed input `run` and every downstream
+ * consumer treat as "no tenant", never "default/shared access".
+ * @param headers - the incoming request's (already-lowercased) header map.
+ * @returns the validated tenant id, or `undefined` when absent or malformed.
+ */
+resolveTenant(headers: Record<string, string | string[] | undefined>): string | undefined
+
+/**
+ * Run `fn` with `tenantId` bound to the active async chain for its whole
+ * lifetime, including every `await` inside it and every resumption of an
+ * async generator started inside it.
+ * @param tenantId - the resolved tenant id, or `undefined` for no tenant.
+ * @param fn - the operation to run with that tenant bound.
+ * @returns `fn`'s return value.
+ */
+run<T>(tenantId: string | undefined, fn: () => T): T
+
+/**
+ * Read the tenant id bound to the currently executing async chain.
+ * @returns the bound tenant id, or `undefined` outside any {@link run} call.
+ */
+current(): string | undefined
+
+/**
+ * Read the tenant id bound to the currently executing async chain, failing
+ * closed when none is bound. Every tenant-enforcing consumer (session
+ * scoping, sandbox confinement) calls this instead of {@link current} at its
+ * point of enforcement, so a missing tenant id is a thrown error at the
+ * exact call site that needed it rather than a silently unscoped operation.
+ * @returns the bound tenant id.
+ * @throws {@link TenantRequiredError} when no tenant id is bound.
+ */
+requireCurrent(): string
+```
+
+Source: [`packages/tenant/dsh-tenant-context/src/index.ts`](../../packages/tenant/dsh-tenant-context/src/index.ts)
 <!-- END GENERATED cordis-surface -->

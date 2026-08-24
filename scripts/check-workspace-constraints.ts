@@ -52,8 +52,19 @@ const publishedRepositoryUrl = 'git+https://github.com/deepseek-ai/deepseek-harn
 const experimentalPackageDirectory = /^packages\/experimental\/[^/]+$/
 /** npm namespace reserved for private experimental packages. */
 const experimentalPackageNamePrefix = '@deepseek-ai/dsh-experimental-'
+/**
+ * MINDPORTALIX-TENANT-ISOLATION: private packages that harden this fork for
+ * MindPortalix's single-shared-container multi-tenant deployment. Never an
+ * upstream release member — the `@mindportalix/` scope exists specifically so
+ * these names can never collide with a `@deepseek-ai/dsh-*` package on a
+ * future upstream sync (see each package's module doc comment). Structured
+ * identically to {@link experimentalPackageDirectory}/{@link checkExperimentalManifest}.
+ */
+const tenantPackageDirectory = /^packages\/tenant\/[^/]+$/
+/** npm namespace reserved for MindPortalix tenant-isolation packages (see {@link tenantPackageDirectory}). */
+const tenantPackageNamePrefix = '@mindportalix/'
 /** Directories whose packages this repository publishes: one release member each. */
-const releaseMemberDirectory = /^(?:packages\/(?!experimental\/)[^/]+\/[^/]+|apps\/[^/]+|vendor\/[^/]+)$/
+const releaseMemberDirectory = /^(?:packages\/(?!experimental\/|tenant\/)[^/]+\/[^/]+|apps\/[^/]+|vendor\/[^/]+)$/
 
 const localArtifactDirs = new Set(['node_modules'])
 const appPackageFiles: Readonly<Record<string, readonly string[]>> = {
@@ -254,8 +265,21 @@ export function checkExperimentalManifest({ dir, manifest }: WorkspaceManifest):
   return errors
 }
 
+/** MINDPORTALIX-TENANT-ISOLATION manifest requirements, structured identically to {@link checkExperimentalManifest}. */
+export function checkTenantManifest({ dir, manifest }: WorkspaceManifest): string[] {
+  if (!tenantPackageDirectory.test(dir)) return []
+  const label = manifest.name ?? dir
+  const errors: string[] = []
+  if (manifest.name?.startsWith(tenantPackageNamePrefix) !== true) {
+    errors.push(`${label}: tenant-isolation package name must start with ${JSON.stringify(tenantPackageNamePrefix)}`)
+  }
+  if (manifest.private !== true) errors.push(`${label}: tenant-isolation package must set "private": true`)
+  if (manifest.publishConfig !== undefined) errors.push(`${label}: tenant-isolation package must omit publishConfig`)
+  return errors
+}
+
 function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
-  const errors = checkExperimentalManifest({ dir, manifest })
+  const errors = [...checkExperimentalManifest({ dir, manifest }), ...checkTenantManifest({ dir, manifest })]
   const label = manifest.name ?? dir
   const isLandlockPackageDir = dir.startsWith('native/landlock-run/packages/')
   const isPublicLandlockPackage = isLandlockPackageDir
@@ -297,7 +321,7 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
       || manifest.repository.directory !== dir) {
       errors.push(`${label}: release member repository must use ${publishedRepositoryUrl} with directory ${dir}`)
     }
-  } else if (!experimentalPackageDirectory.test(dir) && manifest.private !== true) {
+  } else if (!experimentalPackageDirectory.test(dir) && !tenantPackageDirectory.test(dir) && manifest.private !== true) {
     errors.push(`${label}: package.json must set "private": true`)
   }
 

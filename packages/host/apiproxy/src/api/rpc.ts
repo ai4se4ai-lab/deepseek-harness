@@ -41,6 +41,16 @@ export interface RpcErrorDetailsMap {
   'workspace-invalid-path': { path: string }
   'workspace-name-conflict': { name: string }
   'workspace-move-invalid': { workspaceId: string; sessionId: SessionId; beforeSessionId?: SessionId }
+  // MINDPORTALIX-TENANT-ISOLATION: a session.create/workspace.create path (or
+  // a resolved workspace's path) fell outside the caller's tenant root.
+  // Reported here rather than reusing 'workspace-invalid-path' so a tenant
+  // clamp rejection is distinguishable from "not a real directory" in client
+  // diagnostics and tests, without changing that code's existing meaning.
+  'tenant-path-invalid': { path: string }
+  // MINDPORTALIX-TENANT-ISOLATION: a tenant-scoped method ran with no tenant
+  // identity bound (ctx.tenantContext.current() === undefined) — the guard's
+  // fail-closed rejection, never a silent unscoped fallback.
+  'tenant-required': {}
   'directory-unreadable': { path: string }
   'directory-exists': { path: string }
   'directory-create-failed': { path: string }

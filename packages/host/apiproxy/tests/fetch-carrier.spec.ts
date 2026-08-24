@@ -803,3 +803,19 @@ describe('resolveBase', () => {
     }
   })
 })
+
+describe('mintRpcId', () => {
+  it('falls back to crypto.getRandomValues when randomUUID is unavailable (insecure-context browsers)', async () => {
+    const original = crypto.randomUUID
+    // @ts-expect-error - simulates a browser insecure context, where randomUUID is not exposed
+    delete crypto.randomUUID
+    try {
+      const c = client()
+      const response = await c.sessions.list({})
+      expect(response.result).toEqual({ ok: true, value: { items: [] } })
+      expect(response.rpcId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    } finally {
+      crypto.randomUUID = original
+    }
+  })
+})

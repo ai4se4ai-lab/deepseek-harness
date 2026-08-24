@@ -637,7 +637,8 @@
         "tests/**/*.ts"
       ],
       "ignoreDependencies": [
-        "@deepseek-ai/.+"
+        "@deepseek-ai/.+",
+        "@mindportalix/.+"
       ]
     },
     "packages/subagent/subagent-dsh-sdk": {

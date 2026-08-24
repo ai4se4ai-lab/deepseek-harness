@@ -10,6 +10,9 @@ import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
 import { assertTrustedAuthority, isTrustedApiRequest } from './api-request-trust.ts'
 import { HostConnectionService } from './rpc-host.ts'
 import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink.ts'
+// MINDPORTALIX-TENANT-ISOLATION: type-only edge for ctx.get('tenantContext');
+// the tenant-isolation patch layer is what actually mounts the service.
+import type {} from '@mindportalix/dsh-tenant-context'
 
 export type {
   ConnectionRpcAuthority,
@@ -167,13 +170,26 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
         res.end('forbidden')
         return
       }
-      await bridge(req, res, fetchHandler, maxRequestBodyBytes)
+      // MINDPORTALIX-TENANT-ISOLATION: bind the trusted proxy's tenant id for this request's whole
+      // async chain — this is the actual /api entry point apiProxy (session.create, workspace.*, ...) is
+      // served through, ahead of createSharedFetchHandler's Fetch-Request dispatch above.
+      const tenantContext = ctx.get('tenantContext')
+      if (tenantContext === undefined) {
+        await bridge(req, res, fetchHandler, maxRequestBodyBytes)
+      } else {
+        await tenantContext.run(
+          tenantContext.resolveTenant(req.headers),
+          () => bridge(req, res, fetchHandler, maxRequestBodyBytes),
+        )
+      }
     },
   }
   ctx.effect(() => ctx.webServer.register(route), 'client-connection: /api route')
   ctx.inject(['apiProxy'], (apiCtx) => {
     assertImageBodyCapacity(apiCtx, maxRequestBodyBytes)
-    const downlinks = new WebSocketDownlinks(apiCtx.apiProxy)
+    // MINDPORTALIX-TENANT-ISOLATION: optional — undefined when the
+    // tenant-isolation patch layer is not mounted.
+    const downlinks = new WebSocketDownlinks(apiCtx.apiProxy, apiCtx.get('tenantContext'))
     const registerDownlink = (
       path: string,
       handle: WebUpgradeRoute['handler'],

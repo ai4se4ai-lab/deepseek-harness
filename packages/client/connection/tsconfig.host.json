@@ -28,6 +28,9 @@
     },
     {
       "path": "../../runtime-diagnostics/invariants"
+    },
+    {
+      "path": "../../tenant/dsh-tenant-context"
     }
   ]
 }

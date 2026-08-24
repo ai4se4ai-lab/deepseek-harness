@@ -286,6 +286,13 @@
         "./packages/test-support/*/src",
         "./packages/host/*/src",
         "./packages/client/*/src"
+      ],
+      // MINDPORTALIX-TENANT-ISOLATION: a deliberately different npm scope
+      // (never @deepseek-ai/dsh-*, so these names can never collide with an
+      // upstream package on a future sync) for the fork-owned multi-tenant
+      // hardening packages under packages/tenant/*.
+      "@mindportalix/*": [
+        "./packages/tenant/*/src"
       ]
     }
   }

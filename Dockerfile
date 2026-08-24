@@ -48,6 +48,20 @@ FROM node:${NODE_VERSION} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
+# PRE-EXISTING GAP, discovered and fixed while validating MINDPORTALIX-TENANT-ISOLATION's
+# sandbox fork: neither Linux confinement backend @deepseek-ai/dsh-sandbox-local (and
+# therefore this fork) selects between was actually usable in this image before this line —
+# bubblewrap ships in neither the node:*-bookworm-slim base nor this Dockerfile, and the
+# Landlock launcher's native binary (native/landlock-run/packages/linux-*/bin/landlock-run)
+# is a CI release artifact not checked into this git checkout, so ctx.sandbox.confine() threw
+# SANDBOX_UNAVAILABLE for every request. This is not new to the tenant-isolation work — the
+# unmodified upstream provider hits the identical failure in this same image — but it means
+# the whole sandbox subsystem, tenant-scoped or not, was nonfunctional in this deployment
+# until fixed. bwrap needs no special container privileges beyond ordinary unprivileged
+# user-namespace creation, which Docker's default seccomp/apparmor profile permits.
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/vendor ./vendor
@@ -55,6 +69,10 @@ COPY --from=build /app/native ./native
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/apps ./apps
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# MINDPORTALIX-TENANT-ISOLATION: shipped as its own --patch overlay (see the
+# entrypoint script and deploy/tenant-isolation.cordis.patch.yml's header
+# comment for why this is a --patch flag rather than a copy into $DSH_HOME).
+COPY deploy/tenant-isolation.cordis.patch.yml /app/deploy/tenant-isolation.cordis.patch.yml
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
     && mkdir -p /data \
     && chown -R node:node /app /data

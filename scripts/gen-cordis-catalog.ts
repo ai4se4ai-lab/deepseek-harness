@@ -101,6 +101,10 @@ export const SERVICE_PAGE: Record<string, string> = {
   subagents: 'subagent.md',
   subprocess: 'subprocess.md',
   systemPrompt: 'system-prompt.md',
+  // MINDPORTALIX-TENANT-ISOLATION: no dedicated subsystems page (would need a
+  // full bilingual doc pair this fork's scope doesn't extend to); grouped with
+  // sandbox.md, this service's highest-stakes consumer (@mindportalix/dsh-tenant-sandbox-local).
+  tenantContext: 'sandbox.md',
   jobs: 'jobs.md',
   sessionTelemetry: 'session-telemetry.md',
   agentTeams: 'agent-team.md',
