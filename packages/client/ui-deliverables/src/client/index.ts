@@ -59,7 +59,8 @@ export function apply(ctx: ClientContext): void {
       // no vocabulary — the two surfaces agree by construction.
       const paths = selectProducedFiles(owner)
       if (paths === null) return undefined
-      return producedFileMentions(paths, owner.openFile, path => t('produced.open', { name: path }))
+      const canOpenPath = connection.isLoopback && connection.hostDescription.getSnapshot()?.canOpenPath === true
+      return producedFileMentions(paths, owner.openFile, path => t('produced.open', { name: path }), canOpenPath)
     },
   }
   ctx.provide('chatFileMentions', mentions)

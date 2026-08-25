@@ -407,6 +407,20 @@ describe('ProducedFiles row', () => {
     if (!(row instanceof HTMLElement)) throw new Error('produced row missing')
     expect(within(row).getByText('+ 1 file')).toBeTruthy()
   })
+
+  it('renders inert chips, never calling openFile, when the Host cannot open natively', () => {
+    const openFile = vi.fn<(path: string) => void>()
+    const view = render(
+      <ProducedFiles matched={['a.md', 'b.md']} openFile={openFile} {...capability(false)} t={t} />,
+    )
+    const row = view.container.querySelector('[data-produced-files-row]')
+    if (!(row instanceof HTMLElement)) throw new Error('produced row missing')
+    expect(within(row).queryAllByRole('button')).toHaveLength(0)
+    const chip = within(row).getByText('a.md')
+    expect(chip.tagName).not.toBe('BUTTON')
+    fireEvent.click(chip)
+    expect(openFile).not.toHaveBeenCalled()
+  })
 })
 
 describe('producedFileMentions resolver', () => {
@@ -418,6 +432,7 @@ describe('producedFileMentions resolver', () => {
       ['out/index.html', 'a/style.css', 'b/style.css'],
       (path) => { opened.push(path) },
       label,
+      true,
     )
     // Unique basename resolves to its full path; the full path rides title.
     const byBasename = resolver.resolve('index.html')
@@ -433,6 +448,19 @@ describe('producedFileMentions resolver', () => {
     expect(resolver.resolve('style.css')).toBeUndefined()
     expect(resolver.resolve('notes.md')).toBeUndefined()
     expect(basename('a\\b\\c.txt')).toBe('c.txt')
+  })
+
+  it('declines every mention, never calling openFile, when the Host cannot open natively', () => {
+    const opened: string[] = []
+    const resolver = producedFileMentions(
+      ['out/index.html'],
+      (path) => { opened.push(path) },
+      label,
+      false,
+    )
+    expect(resolver.resolve('index.html')).toBeUndefined()
+    expect(resolver.resolve('out/index.html')).toBeUndefined()
+    expect(opened).toEqual([])
   })
 })
 
@@ -460,10 +488,10 @@ describe('plugin registration', () => {
       name: 'root',
       children: { 'conversation.chat.turnTail': { kind: 'chain', scope: 'session' } },
     } as never, () => null)
-    const hostDescription = { getSnapshot: () => undefined, subscribe: () => () => {} }
+    const hostDescription = { getSnapshot: () => ({ canOpenPath: true }), subscribe: () => () => {} }
     ctx.provide('connection', {
       api: { settings: {} },
-      isLoopback: false,
+      isLoopback: true,
       hostDescription,
     } as never)
     // ui-theme's Appearance row binds a durable scope through these two.
@@ -475,7 +503,7 @@ describe('plugin registration', () => {
     await fiber.await()
     const [entry] = ctx.slots.entries('conversation.chat.turnTail')
     expect(entry).toBeDefined()
-    expect(entry?.inject?.()).toEqual({ isLoopback: false, hooks: { hostDescription } })
+    expect(entry?.inject?.()).toEqual({ isLoopback: true, hooks: { hostDescription } })
 
     // The prose face is live while the plugin is: a produced turn yields a
     // resolver whose matches open through the owner-supplied opener.
