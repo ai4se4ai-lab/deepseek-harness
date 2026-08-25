@@ -10,13 +10,17 @@ function callName(node: ToolCallBlock): string {
   return 'kind' in node ? node.call?.name ?? '' : node.name
 }
 
+/** Owner-supplied `openFile`, already gated to `undefined` when this deployment cannot open a path natively. */
+type GatedOpenFile = ((path: string) => void) | undefined
+
 /** One atomic call dispatched through the Tool-owned keyed slot. */
 const ToolCall = memo(function ToolCall({
   renderSlot, callId, toolName, block, openFile, selected, cwd, home, inspectCall, t, children,
-}: Pick<ToolTreeProps, 'renderSlot' | 'openFile' | 'cwd' | 'inspectCall' | 't'> & {
+}: Pick<ToolTreeProps, 'renderSlot' | 'cwd' | 'inspectCall' | 't'> & {
   callId: string
   toolName: string
   block: ToolCallBlock
+  openFile: GatedOpenFile
   selected: boolean
   home?: string | undefined
   children?: ReactNode
@@ -48,9 +52,10 @@ const ToolCall = memo(function ToolCall({
 
 const ToolCallBranch = memo(function ToolCallBranch({
   renderSlot, block, selectedCallId, cwd, home, openFile, inspectCall, t,
-}: Pick<ToolTreeProps, 'renderSlot' | 'selectedCallId' | 'cwd' | 'openFile' | 'inspectCall' | 't'> & {
+}: Pick<ToolTreeProps, 'renderSlot' | 'selectedCallId' | 'cwd' | 'inspectCall' | 't'> & {
   block: ToolCallBlock
   home?: string | undefined
+  openFile: GatedOpenFile
 }) {
   return (
     <ToolCall
@@ -93,9 +98,10 @@ const ToolCallBranch = memo(function ToolCallBranch({
  * @returns the Tool call tree.
  */
 export function ToolCallTree({
-  renderSlot, node, selectedCallId, cwd, openFile, inspectCall, useHostDescription, t,
+  renderSlot, node, selectedCallId, cwd, openFile, inspectCall, useHostDescription, isLoopback, t,
 }: ToolTreeProps) {
   const home = useHostDescription(description => description?.home)
+  const canOpenPath = isLoopback && useHostDescription(description => description?.canOpenPath === true)
   const block = node.data.root
   return (
     <ToolCallBranch
@@ -104,7 +110,7 @@ export function ToolCallTree({
       selectedCallId={selectedCallId}
       cwd={cwd}
       home={home}
-      openFile={openFile}
+      openFile={canOpenPath ? openFile : undefined}
       inspectCall={inspectCall}
       t={t}
     />

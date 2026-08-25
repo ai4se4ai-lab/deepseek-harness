@@ -22,7 +22,10 @@ export const inject = ['slots', 'connection']
  */
 export function apply(ctx: ClientContext): void {
   const connection = ctx.get('connection') as ConnectionHandle
-  const toolInject = () => ({ hooks: { hostDescription: connection.hostDescription } })
+  const toolInject = () => ({
+    isLoopback: connection.isLoopback,
+    hooks: { hostDescription: connection.hostDescription },
+  })
   ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
     name: 'conversation.chat.node',
     key: 'tool-call',

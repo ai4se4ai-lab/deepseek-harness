@@ -62,12 +62,12 @@ const LAYOUT_CHILDREN = {
  * service boundaries only, the package apply on its own
  * fiber, and the test AppFrame occupying 'root'.
  */
-async function bench(nodes: ToolResultNode[]) {
+async function bench(nodes: ToolResultNode[], canOpenPath = true) {
   const runtime = await SlotTestRuntime.create()
   runtime.provide('connection', {
     api: { settings: {} },
     isLoopback: true,
-    hostDescription: { getSnapshot: () => ({ canOpenPath: true }), subscribe: () => () => {} },
+    hostDescription: { getSnapshot: () => ({ canOpenPath }), subscribe: () => () => {} },
   })
   // ui-theme's Appearance row binds a durable scope through these two.
   runtime.provide('remote', { $on: () => () => {} })
@@ -140,6 +140,16 @@ describe('keyed toolview hole through the real machinery', () => {
     await vi.waitFor(() => {
       expect(b.runtime.workspaces.calls).toContainEqual({ method: 'openPath', args: ['src/a.ts'] })
     })
+    await b.runtime.dispose()
+  })
+
+  it('renders the path as inert text, never calling workspaces.openPath, when the Host cannot open natively', async () => {
+    const b = await bench([toolResult(3, 'c1', 'read', '{"path":"src/a.ts"}')], false)
+    const view = b.runtime.renderRoot()
+    const pathText = view.getByText('src/a.ts')
+    expect(pathText.tagName).not.toBe('BUTTON')
+    pathText.click()
+    expect(b.runtime.workspaces.calls.some(c => c.method === 'openPath')).toBe(false)
     await b.runtime.dispose()
   })
 
