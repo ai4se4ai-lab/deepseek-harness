@@ -23,9 +23,9 @@ File-tool path summaries (`read` / `write` / `edit` args carrying `path` or `fil
 
 ## Consequences
 
-Clicking a file path in a tool row opens that path on the host. Non-file tool rows are inert summaries (expand toggles remain where the row already supported them). Remote or non-loopback clients cannot invoke `host.openPath`. A Host or OS refusal is owned by the chat view: it shows the thrown reason and retries the same path ([file-open failure](../bug-fix/2026-08-18-tool-row-file-open-failure.md)).
+Clicking a file path in a tool row opens that path on the host. Non-file tool rows are inert summaries (expand toggles remain where the row already supported them). Remote or non-loopback clients cannot invoke `host.openPath` at the wire fence — except a reverse proxy that rewrites Host/Origin to a loopback authority ahead of the carrier (a browser is genuinely remote, but the fence sees loopback), where the client's own `isLoopback && canOpenPath` pre-check ([file-open failure](../bug-fix/2026-08-18-tool-row-file-open-failure.md)) is what actually stops the attempt. A Host or OS refusal that does reach the RPC is owned by the chat view: it shows the thrown reason and retries the same path.
 
 ## Risks
 
-- Desktop Linux hosts without `xdg-open`, and WSL hosts without working Windows interop (`wslpath` plus `powershell.exe`), fail the RPC; the chat view shows that Host error and offers retry.
+- Desktop Linux hosts without `xdg-open`, and WSL hosts without working Windows interop (`wslpath` plus `powershell.exe`), fail the RPC; `openTarget`'s `canOpenPaths()` precheck (host-side) and the chat view's own capability check (client-side) both exist to keep this the exceptional case, not the normal one — but a host whose detection disagrees with reality still reaches the RPC and gets that Host error with retry.
 - Relative paths without a session cwd are forwarded verbatim and may fail on the host.

@@ -55,6 +55,14 @@ export interface RpcErrorDetailsMap {
   'directory-exists': { path: string }
   'directory-create-failed': { path: string }
   'directory-picker-unavailable': { capability: string }
+  /**
+   * `openTarget` refused before attempting a native open: `canOpenPaths()`
+   * answered false (headless/containerized host, no desktop signal), so
+   * spawning an OS opener would only fail with a raw ENOENT. A client sees
+   * this instead of that spawn failure and can offer its own in-app fallback
+   * (e.g. the file-mutation row's already-expandable diff/content view).
+   */
+  'native-open-unavailable': {}
   'agent-preset-read-only': { agentPreset: string; reason: string }
   'agent-preset-locked': { sessionId: SessionId; agentPreset: string }
   'agent-preset-conflict': { sessionId: SessionId; requestedPreset: string; existingPreset?: string }

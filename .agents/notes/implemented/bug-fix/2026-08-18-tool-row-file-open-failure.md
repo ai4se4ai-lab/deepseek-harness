@@ -18,6 +18,8 @@ The dialog lives on the view that owns the Host call, not on each tool row. Prod
 
 The Host message is shown as thrown. `WorkspaceRuntime.openPath` prefixes `path open failed: ` onto the wire error; the dialog does not unwrap that prefix.
 
+The chat view's `openFile` inject checks `connection.isLoopback && connection.hostDescription.getSnapshot()?.canOpenPath` before calling `workspaces.openPath` at all: when false it rejects locally with a translated, actionable message (point at the file-mutation row's own expandable diff/content view) instead of round-tripping to a Host that `openTarget`'s own `canOpenPaths()` precheck would refuse anyway. This matters beyond the plain headless case: a reverse proxy that rewrites Host/Origin to loopback ahead of the browser-trust carrier fence (see [tool-call file open in OS](../feature/2026-07-28-tool-call-file-open-in-os.md)) makes that fence pass for a browser that is genuinely remote, so the client-side check is what actually stops the attempt there. `host.openPath`/`settings.openDocument`'s native-editor handoff answer `native-open-unavailable` (not a raw ENOENT) when `canOpenPaths()` is false and this pre-check is bypassed or absent, so every caller — this inject included — gets a clean refusal to show, never a spawn failure string.
+
 ## Alternatives considered
 
 - **Per-row inline error.** The Host call is conversation-owned and several entries share one opener; a row-local banner would duplicate the same refusal next to every click target.

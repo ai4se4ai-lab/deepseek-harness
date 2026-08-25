@@ -45,9 +45,19 @@ function sessionFakeFor() {
   } satisfies SessionBehaviorOverrides
 }
 
-async function bench() {
+/** Connection mock override for the openFile capability gate (defaults: non-loopback, no host-open). */
+interface ConnectionOverrides {
+  isLoopback?: boolean
+  canOpenPath?: boolean
+}
+
+async function bench(connectionOverrides: ConnectionOverrides = {}) {
   const runtime = await SlotTestRuntime.create()
-  runtime.provide('connection', { api: { settings: {} }, isLoopback: false })
+  runtime.provide('connection', {
+    api: { settings: {} },
+    isLoopback: connectionOverrides.isLoopback ?? false,
+    hostDescription: { getSnapshot: () => ({ canOpenPath: connectionOverrides.canOpenPath ?? false }) },
+  })
   // The plugin injects both; these specs exercise no settings path.
   runtime.provide('remote', { $on: () => () => {} })
   runtime.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)
@@ -234,7 +244,7 @@ describe('conversation slot inject API', () => {
   })
 
   it('openFile (chat view face) resolves against session cwd and calls workspaces.openPath', async () => {
-    const b = await bench()
+    const b = await bench({ isLoopback: true, canOpenPath: true })
     const { injected } = b.chatViewApi(ROOT)
     await injected.openFile('src/a.ts')
     await vi.waitFor(() => {
@@ -244,10 +254,18 @@ describe('conversation slot inject API', () => {
   })
 
   it('openFile rejects when the Host cannot open the path', async () => {
-    const b = await bench()
+    const b = await bench({ isLoopback: true, canOpenPath: true })
     b.runtime.workspaces.stub('openPath', () => Promise.reject(new Error('xdg-open is not available')))
     const { injected } = b.chatViewApi(ROOT)
     await expect(injected.openFile('src/a.ts')).rejects.toThrow('xdg-open is not available')
+    await b.runtime.dispose()
+  })
+
+  it('openFile rejects locally, without calling workspaces.openPath, when the Host cannot open natively', async () => {
+    const b = await bench()
+    const { injected } = b.chatViewApi(ROOT)
+    await expect(injected.openFile('src/a.ts')).rejects.toThrow(/桌面应用/)
+    expect(b.runtime.workspaces.calls).not.toContainEqual(expect.objectContaining({ method: 'openPath' }))
     await b.runtime.dispose()
   })
 

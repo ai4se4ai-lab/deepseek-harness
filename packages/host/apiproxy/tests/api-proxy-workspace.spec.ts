@@ -258,6 +258,18 @@ describe('host.openPath', () => {
     abort.abort()
     expect((await pending).result).toMatchObject({ ok: false, error: { code: 'cancelled' } })
   })
+
+  it('refuses with native-open-unavailable instead of spawning into a headless deployment', async () => {
+    const opened: string[] = []
+    const { api } = await harness(undefined, undefined, {
+      canOpenPath: () => false,
+      // Present to prove it is never reached: canOpenPaths() short-circuits first.
+      openPath: async (path) => { opened.push(path) },
+    })
+    const response = await api.host.openPath(request({ path: '/tmp/a.txt' }), new AbortController().signal)
+    expect(response.result).toMatchObject({ ok: false, error: { code: 'native-open-unavailable' } })
+    expect(opened).toEqual([])
+  })
 })
 
 describe('workspace.create', () => {

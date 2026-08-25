@@ -4,6 +4,7 @@ import { resolveSlotLabel, type BoundActions } from '@deepseek-ai/dsh-client-ui-
 import {
   resolveWorkspacePath, type ISessions, type SessionId,
 } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 // Type-only: the ctx.settingsScope Context merge. Cross-plugin collaboration
 // goes through the service, never a value import (client bundle purity gate).
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
@@ -117,6 +118,7 @@ export function apply(ctx: Context): void {
   const workspaces = ctx.workspaces
   const layout = ctx.layout
   const slots = ctx.slots
+  const connection = ctx.get('connection') as ConnectionHandle
 
   registerConversationNodes(ctx)
   registerChatNodeRenderers(ctx)
@@ -398,6 +400,18 @@ export function apply(ctx: Context): void {
         },
         fileMentions: owner => ctx.get('chatFileMentions')?.forClosing(owner),
         openFile: (path) => {
+          // Same isLoopback + canOpenPath gate ui-deliverables' ProducedFiles
+          // already applies to its own "Show in Folder" button — here it
+          // covers every file-open surface (this row and the tool-call rows)
+          // through their one shared opener, so a deployment with no desktop
+          // to hand a path to (this container included) never spawns a native
+          // opener that can only fail. The file's own content stays reachable
+          // through the file-mutation row's already-expandable diff view.
+          const canOpenPath = connection.isLoopback
+            && connection.hostDescription.getSnapshot()?.canOpenPath === true
+          if (!canOpenPath) {
+            return Promise.reject(new Error(t(path === '.' ? 'fileOpen.unavailableFolder' : 'fileOpen.unavailableFile')))
+          }
           const cwd = sessions.list.getSnapshot().byId[sessionId]?.cwd
           return workspaces.openPath(resolveWorkspacePath(cwd, path))
         },

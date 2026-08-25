@@ -1817,6 +1817,13 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     request: RpcRequest<unknown>, path: string, signal: AbortSignal,
     open: (path: string, signal: AbortSignal) => Promise<void>,
   ): Promise<RpcResponse<{ opened: true }>> {
+    // Fail clean before spawning: canOpenPaths() already knows a headless/
+    // containerized host has no desktop to hand the path to, so attempting
+    // `open()` here would only produce a raw ENOENT from the OS opener binary
+    // (xdg-open and friends) instead of a structured, client-actionable error.
+    if (!canOpenPaths()) {
+      return err(request, { code: 'native-open-unavailable', message: 'this deployment cannot open a path with a native application', details: {} })
+    }
     try {
       await open(path, signal)
       return ok(request, { opened: true as const })
@@ -1857,8 +1864,8 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
   /** Whether this deployment can hand a path to a native opener at all. */
   function canOpenPaths(): boolean {
     if (defaults.canOpenPath !== undefined) return defaults.canOpenPath()
-    // An injected opener is by definition usable; otherwise ask the platform.
-    return defaults.openPath !== undefined || canOpenNativePath()
+    // An injected opener (either boundary) is by definition usable; otherwise ask the platform.
+    return defaults.openPath !== undefined || defaults.openTextFile !== undefined || canOpenNativePath()
   }
 
   /** Missing-service report shared by the credentials domain. */
