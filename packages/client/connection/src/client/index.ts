@@ -78,6 +78,20 @@ interface ClientTransportGlobal {
 }
 
 /**
+ * MINDPORTALIX-TENANT-ISOLATION: page global the served index.html carries
+ * (via `webserver/index-inject`, see the `client-connection` host plugin's
+ * `apply()`) exactly when this page's own Host webserver is reachable only
+ * through the trusted MindPortalix DSH proxy — never set by unmodified
+ * upstream DSH. Distinct from {@link isLoopbackHostname}: it answers "is the
+ * settings/credentials wire API safe to call", not "is this the same
+ * machine" — native-path-open features must keep using plain loopback, since
+ * a path the container can open is meaningless on the browser's own machine.
+ */
+interface TrustedSettingsGlobal {
+  __DSH_MP_SETTINGS_TRUSTED__?: true
+}
+
+/**
  * The ctx.connection service API: the API client plus a one-shot
  * controller starter (the runtime plugin supplies sinks when its object layer
  * is ready — connection stays consumer-agnostic).
@@ -87,6 +101,15 @@ export interface ConnectionHandle {
   readonly api: IApiClient
   /** Whether the current page authority is loopback; non-browser contexts default to true. */
   readonly isLoopback: boolean
+  /**
+   * Whether the settings/credentials wire API is safe to call from this page:
+   * true for a loopback origin, or for a page the serving Host itself vouches
+   * for as reachable only through a trusted proxy (MINDPORTALIX-TENANT-ISOLATION;
+   * see {@link TrustedSettingsGlobal}). Always `isLoopback` on unmodified
+   * upstream DSH. Native-path-open features must keep reading `isLoopback`
+   * instead — this field says nothing about running on the same machine.
+   */
+  readonly settingsAvailable: boolean
   /** Generation-scoped Host facts, including the account home and native path-open capability. */
   readonly hostDescription: HostDescriptionSource
   /** Generic logical RPC channels over the same Connection transport. */
@@ -127,9 +150,12 @@ export function apply(ctx: Context): void {
       }
     }
   }
+  const isLoopback = pageLocation === undefined || isLoopbackHostname(pageLocation.hostname)
   const handle: ConnectionHandle = {
     api,
-    isLoopback: pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),
+    isLoopback,
+    settingsAvailable: isLoopback
+      || (globalThis as TrustedSettingsGlobal).__DSH_MP_SETTINGS_TRUSTED__ === true,
     hostDescription: {
       getSnapshot: () => description,
       subscribe: (listener) => {

@@ -9,7 +9,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { RpcId, type ClientRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
-import type { WebServer, WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
+import type { IndexInjection, WebServer, WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import { API_PATH, apply, HOST_EVENTS_PATH, inject, MUX_EVENTS_PATH, type HostConnectionHandle } from '../src/index.ts'
 import { DEFAULT_MAX_REQUEST_BODY_BYTES } from '../src/http-bridge.ts'
 
@@ -129,6 +129,38 @@ describe('connection node half', () => {
     await dispose()
     expect(routes).toHaveLength(0)
     expect(upgrades).toHaveLength(0)
+  })
+
+  // MINDPORTALIX-TENANT-ISOLATION: `webserver/index-inject` is how a served
+  // page learns its own request reached this process only through the
+  // trusted MindPortalix proxy (see `apply()`'s comment on the listener).
+  it('declares no browser trust signal when the tenant-isolation patch layer is not mounted', async () => {
+    const ctx = new Context()
+    const routes: WebRoute[] = []
+    ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
+    ctx.provide('apiProxy', {} as unknown as ApiProxy)
+    const fiber = ctx.plugin({ inject: [...inject], apply })
+    await fiber.await()
+    const table: IndexInjection[] = []
+    ctx.emit('webserver/index-inject', table)
+    expect(table).toHaveLength(0)
+    await fiber.dispose()
+  })
+
+  it('declares the browser trust signal once the tenant-isolation patch layer resolves a tenant context', async () => {
+    const ctx = new Context()
+    const routes: WebRoute[] = []
+    ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
+    ctx.provide('apiProxy', {} as unknown as ApiProxy)
+    // Stands in for `@mindportalix/dsh-tenant-context`'s TenantContextService:
+    // this listener only reads `ctx.get('tenantContext') !== undefined`.
+    ctx.provide('tenantContext', {} as never)
+    const fiber = ctx.plugin({ inject: [...inject], apply })
+    await fiber.await()
+    const table: IndexInjection[] = []
+    ctx.emit('webserver/index-inject', table)
+    expect(table).toEqual([{ kind: 'global', name: '__DSH_MP_SETTINGS_TRUSTED__', value: true }])
+    await fiber.dispose()
   })
 
   it('requires WebSocket upgrade for network GETs to either event path', async () => {

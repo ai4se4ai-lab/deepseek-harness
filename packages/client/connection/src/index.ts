@@ -185,6 +185,22 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
     },
   }
   ctx.effect(() => ctx.webServer.register(route), 'client-connection: /api route')
+  // MINDPORTALIX-TENANT-ISOLATION: tell the browser its own page is reachable
+  // only through the trusted MindPortalix proxy, so the client can treat the
+  // PRIVILEGED_METHODS plane (settings/credentials) as available without a
+  // loopback `location.hostname`. Checked lazily inside the listener (not at
+  // apply() time) because the tenant-isolation patch layer's `tenant-context`
+  // row may not have loaded yet when THIS row's apply() runs — index render
+  // happens per-request, well after boot completes, so by then it always has.
+  // Safe unconditionally: `docker-compose.dsh.yml` never publishes this
+  // process's port, so every request that reaches it already passed
+  // dsh-proxy.js's ticket/cookie authentication (see that file's header
+  // comment) — there is no direct path here for the tenant-context row to be
+  // mounted without the proxy also being the only way in.
+  ctx.on('webserver/index-inject', (table) => {
+    if (ctx.get('tenantContext') === undefined) return
+    table.push({ kind: 'global', name: '__DSH_MP_SETTINGS_TRUSTED__', value: true })
+  })
   ctx.inject(['apiProxy'], (apiCtx) => {
     assertImageBodyCapacity(apiCtx, maxRequestBodyBytes)
     // MINDPORTALIX-TENANT-ISOLATION: optional — undefined when the

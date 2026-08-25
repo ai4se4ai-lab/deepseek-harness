@@ -428,7 +428,7 @@ describe('SettingsScopeBinder.bind', () => {
     const wire = { settings: { describe: describeCall } }
     const mirror = new SettingsDescribeMirror(wire as never)
     const ctx = new Context()
-    ctx.provide('connection', { api: wire, isLoopback: true } as never)
+    ctx.provide('connection', { api: wire, isLoopback: true, settingsAvailable: true } as never)
     let theme!: SettingsScope<UiTestSettings>
     let locale!: SettingsScope<UiTestSettings>
     new TestRemote(ctx)
@@ -457,7 +457,7 @@ describe('SettingsScopeBinder.bind', () => {
     const wire = { settings: { describe: describeCall } }
     const mirror = new SettingsDescribeMirror(wire as never, 'memory')
     const ctx = new Context()
-    ctx.provide('connection', { api: wire, isLoopback: false } as never)
+    ctx.provide('connection', { api: wire, isLoopback: false, settingsAvailable: false } as never)
     let scope!: SettingsScope<UiTestSettings>
     new TestRemote(ctx)
     await ctx.plugin(SettingsScopeBinder, { mirror, schema: settingsSchema }).await()
