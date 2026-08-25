@@ -1,12 +1,16 @@
 /**
- * Tenant-scoping wrapper over `ctx.apiProxy`'s session and workspace RPC
- * methods, for the single shared DSH container: every caller carries a
- * `ctx.tenantContext`-bound tenant id (see `@mindportalix/dsh-tenant-context`),
- * and this plugin clamps `session.create`'s `cwd`/`workspaceId`, filters
- * `session.list`/`session.search` results, and clamps or filters every
- * `workspace.*` method to that caller's `$DSH_HOME/tenants/<tenantId>` root —
- * so two tenants sharing this process can never read, enumerate, or mutate
- * each other's sessions or workspaces through the API gateway.
+ * Tenant-scoping wrapper over `ctx.apiProxy`'s session, workspace, and
+ * directory-browse RPC methods, for the single shared DSH container: every
+ * caller carries a `ctx.tenantContext`-bound tenant id (see
+ * `@mindportalix/dsh-tenant-context`), and this plugin clamps
+ * `session.create`'s `cwd`/`workspaceId`, filters `session.list`/`session.search`
+ * results, clamps or filters every `workspace.*` method, and clamps
+ * `host.listDirectory`/`host.createDirectory` — the "Add workspace" folder
+ * browser's backend, otherwise unaware of tenant scoping and rooted at the
+ * container OS user's home directory — to that caller's
+ * `$DSH_HOME/tenants/<tenantId>` root, so two tenants sharing this process can
+ * never read, enumerate, browse, or mutate each other's sessions, workspaces,
+ * or filesystem through the API gateway.
  *
  * Every wrapped method calls `ctx.tenantContext.requireCurrent()` before doing
  * anything else and turns its `TenantRequiredError` into a structured
@@ -28,7 +32,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type {
-  ApiProxy, RpcId, RpcResponse, SessionSearchItem, SessionSummary, WorkspaceView,
+  ApiProxy, DirectoryListing, RpcId, RpcResponse, SessionSearchItem, SessionSummary, WorkspaceView,
 } from '@deepseek-ai/dsh-host-apiproxy/api'
 // Type-only: resolves ctx.apiProxy (the Context merge lives at the package root, not ./api).
 import type {} from '@deepseek-ai/dsh-host-apiproxy'
@@ -141,6 +145,8 @@ interface OriginalMethods {
   workspaceInsertBefore: ApiProxy['workspace']['insertBefore']
   workspaceInsertSessionBefore: ApiProxy['workspace']['insertSessionBefore']
   workspaceArchiveSession: ApiProxy['workspace']['archiveSession']
+  hostListDirectory: ApiProxy['host']['listDirectory']
+  hostCreateDirectory: ApiProxy['host']['createDirectory']
 }
 
 /**
@@ -168,6 +174,7 @@ export function apply(ctx: Context): void {
 
   const sessions = ctx.apiProxy.sessions
   const workspace = ctx.apiProxy.workspace
+  const host = ctx.apiProxy.host
 
   const original: OriginalMethods = {
     sessionsCreate: sessions.create.bind(sessions),
@@ -189,6 +196,8 @@ export function apply(ctx: Context): void {
     workspaceInsertBefore: workspace.insertBefore.bind(workspace),
     workspaceInsertSessionBefore: workspace.insertSessionBefore.bind(workspace),
     workspaceArchiveSession: workspace.archiveSession.bind(workspace),
+    hostListDirectory: host.listDirectory.bind(host),
+    hostCreateDirectory: host.createDirectory.bind(host),
   }
 
   sessions.create = async (request) => {
@@ -380,6 +389,52 @@ export function apply(ctx: Context): void {
     return original.workspaceArchiveSession(request)
   }
 
+  /**
+   * Rewrite one directory listing so its "Home" shortcut and breadcrumb trail
+   * never point above the caller's tenant root: `home` becomes the tenant
+   * root itself, and `crumbs` is cut to start at the tenant root (a caller
+   * can browse back up TO it, never past it into container-wide paths like
+   * `/data` or `/`). `target` is always the tenant root or a descendant by
+   * the time this runs, so the tenant root is always one of `crumbs`'
+   * ancestry entries.
+   */
+  function tenantScopedListing(tenantRoot: string, listing: DirectoryListing): DirectoryListing {
+    const resolvedRoot = resolvePath(tenantRoot)
+    const rootIndex = listing.crumbs.findIndex(crumb => resolvePath(crumb.path) === resolvedRoot)
+    return {
+      ...listing,
+      home: tenantRoot,
+      crumbs: rootIndex === -1 ? listing.crumbs : listing.crumbs.slice(rootIndex),
+    }
+  }
+
+  host.listDirectory = async (request, signal) => {
+    const tenant = requireTenant()
+    if (tenant === undefined) return tenantRequiredResponse(request.rpcId)
+    const { tenantRoot } = tenant
+    const path = request.payload.path
+    if (path !== undefined && !isUnderRoot(tenantRoot, path)) {
+      return tenantPathInvalidResponse(request.rpcId, path)
+    }
+    // Explicit default: an omitted path opens the browser in the tenant's own
+    // root, never the container OS user's home directory (never-tenant-scoped).
+    const response = await original.hostListDirectory(
+      path === undefined ? { ...request, payload: { ...request.payload, path: tenantRoot } } : request,
+      signal,
+    )
+    if (!response.result.ok) return response
+    return { rpcId: response.rpcId, result: { ok: true, value: tenantScopedListing(tenantRoot, response.result.value) } }
+  }
+
+  host.createDirectory = async (request) => {
+    const tenant = requireTenant()
+    if (tenant === undefined) return tenantRequiredResponse(request.rpcId)
+    if (!isUnderRoot(tenant.tenantRoot, request.payload.path)) {
+      return tenantPathInvalidResponse(request.rpcId, request.payload.path)
+    }
+    return original.hostCreateDirectory(request)
+  }
+
   ctx.effect(() => () => {
     sessions.create = original.sessionsCreate
     sessions.list = original.sessionsList
@@ -400,6 +455,8 @@ export function apply(ctx: Context): void {
     workspace.insertBefore = original.workspaceInsertBefore
     workspace.insertSessionBefore = original.workspaceInsertSessionBefore
     workspace.archiveSession = original.workspaceArchiveSession
+    host.listDirectory = original.hostListDirectory
+    host.createDirectory = original.hostCreateDirectory
   }, 'tenant-session-guard: restore unwrapped apiProxy methods')
 }
 

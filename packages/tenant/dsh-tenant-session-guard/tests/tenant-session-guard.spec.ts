@@ -8,7 +8,7 @@
 
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { RpcId, type ApiProxy, type RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
@@ -27,6 +27,18 @@ interface FakeWorkspace {
 
 function makeWorkspace(workspaceId: string, path: string, sessionIds: string[] = []): FakeWorkspace {
   return { workspaceId, path, title: workspaceId, sessionIds, createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z' }
+}
+
+/** Ancestor-chain breadcrumbs for `target`, matching the real browse backend's `ancestryCrumbs` shape. */
+function fakeCrumbs(target: string): { name: string; path: string; hidden: boolean }[] {
+  const crumbs: { name: string; path: string; hidden: boolean }[] = []
+  let current = target
+  for (;;) {
+    const parent = dirname(current)
+    crumbs.unshift({ name: parent === current ? current : basename(current), path: current, hidden: false })
+    if (parent === current) return crumbs
+    current = parent
+  }
 }
 
 interface Fixture {
@@ -86,7 +98,24 @@ function fakeApiProxy(fixture: Fixture): ApiProxy {
       result: { ok: true, value: { archivedSessionIds: [...fixture.archivedSessionIds, request.payload.sessionId] } },
     }),
   }
-  return { sessions, workspace } as unknown as ApiProxy
+  const host = {
+    // Echoes an untouched (non-tenant-aware) listing: `home` fixed at the
+    // container OS home, `path`/`crumbs` following whatever path the guard
+    // actually forwarded — tests assert the guard's own rewrite of both.
+    listDirectory: async (request: RpcRequest<{ path?: string }>) => {
+      const target = request.payload.path ?? '/home/node'
+      return {
+        rpcId: request.rpcId,
+        result: {
+          ok: true,
+          value: { path: target, home: '/home/node', crumbs: fakeCrumbs(target), entries: [], truncated: false },
+        },
+      }
+    },
+    createDirectory: async (request: RpcRequest<{ path: string; name: string }>) =>
+      ({ rpcId: request.rpcId, result: { ok: true, value: { path: join(request.payload.path, request.payload.name) } } }),
+  }
+  return { sessions, workspace, host } as unknown as ApiProxy
 }
 
 function fakeWorkspaceRegistry(workspaces: FakeWorkspace[]): Context['workspaceRegistry'] {
@@ -383,6 +412,71 @@ describe('workspace.archiveSession', () => {
   })
 })
 
+describe('host.listDirectory', () => {
+  it('defaults an omitted path to the tenant root, never the container OS home', async () => {
+    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const response = await ctx.tenantContext.run(TENANT_A, () =>
+      api.host.listDirectory(request({}), new AbortController().signal))
+    expect(response.result).toMatchObject({ ok: true, value: { path: tenantRootFor(TENANT_A) } })
+  })
+
+  it('rewrites home to the tenant root and clips crumbs to start there', async () => {
+    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const target = join(tenantRootFor(TENANT_A), 'project')
+    const response = await ctx.tenantContext.run(TENANT_A, () =>
+      api.host.listDirectory(request({ path: target }), new AbortController().signal))
+    expect(response.result.ok).toBe(true)
+    if (!response.result.ok) throw new Error('unreachable')
+    expect(response.result.value.home).toBe(tenantRootFor(TENANT_A))
+    expect(response.result.value.crumbs[0]?.path).toBe(tenantRootFor(TENANT_A))
+    expect(response.result.value.crumbs.some(crumb => crumb.path === '/')).toBe(false)
+  })
+
+  it('accepts a path under the tenant root', async () => {
+    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const target = join(tenantRootFor(TENANT_A), 'project')
+    const response = await ctx.tenantContext.run(TENANT_A, () =>
+      api.host.listDirectory(request({ path: target }), new AbortController().signal))
+    expect(response.result).toMatchObject({ ok: true, value: { path: target } })
+  })
+
+  it('rejects a path outside the tenant root with tenant-path-invalid', async () => {
+    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const foreignPath = join(tenantRootFor(TENANT_B), 'project')
+    const response = await ctx.tenantContext.run(TENANT_A, () =>
+      api.host.listDirectory(request({ path: foreignPath }), new AbortController().signal))
+    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-path-invalid', details: { path: foreignPath } } })
+  })
+
+  it('fails closed with tenant-required when no tenant identity is bound', async () => {
+    const { api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const response = await api.host.listDirectory(request({}), new AbortController().signal)
+    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-required' } })
+  })
+})
+
+describe('host.createDirectory', () => {
+  it('accepts a parent path under the tenant root', async () => {
+    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const response = await ctx.tenantContext.run(TENANT_A, () =>
+      api.host.createDirectory(request({ path: tenantRootFor(TENANT_A), name: 'new-folder' })))
+    expect(response.result).toMatchObject({ ok: true, value: { path: join(tenantRootFor(TENANT_A), 'new-folder') } })
+  })
+
+  it('rejects a parent path outside the tenant root with tenant-path-invalid', async () => {
+    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const response = await ctx.tenantContext.run(TENANT_A, () =>
+      api.host.createDirectory(request({ path: '/home/node', name: 'new-folder' })))
+    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-path-invalid', details: { path: '/home/node' } } })
+  })
+
+  it('fails closed with tenant-required when no tenant identity is bound', async () => {
+    const { api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const response = await api.host.createDirectory(request({ path: '/home/node', name: 'x' }))
+    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-required' } })
+  })
+})
+
 describe('HMR safety', () => {
   it('restores the original apiProxy methods when the plugin fiber is disposed', async () => {
     const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
@@ -395,5 +489,18 @@ describe('HMR safety', () => {
     // The restored method is the original fake (no tenant clamp, no tenant-required rejection).
     const response = await api.sessions.create(request({}))
     expect(response.result.ok).toBe(true)
+  })
+
+  it('restores the original host.listDirectory/createDirectory when the plugin fiber is disposed', async () => {
+    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    // oxlint-disable-next-line typescript/unbound-method -- identity comparison only, never invoked unbound.
+    const wrappedListDirectory = api.host.listDirectory
+    await ctx.fiber.dispose()
+    // oxlint-disable-next-line typescript/unbound-method -- identity comparison only, never invoked unbound.
+    expect(api.host.listDirectory).not.toBe(wrappedListDirectory)
+    // The restored method is the original fake: no tenant-required rejection,
+    // and `home` stays the container OS home (the guard's rewrite is gone).
+    const response = await api.host.listDirectory(request({}), new AbortController().signal)
+    expect(response.result).toMatchObject({ ok: true, value: { home: '/home/node' } })
   })
 })

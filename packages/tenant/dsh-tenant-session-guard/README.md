@@ -1,8 +1,8 @@
 # @mindportalix/dsh-tenant-session-guard
 
-Tenant-scoping wrapper over `ctx.apiProxy`'s session and workspace RPC methods, for the single shared DSH container behind the MindPortalix reverse proxy. Requires `ctx.tenantContext` (`@mindportalix/dsh-tenant-context`) as the sole source of tenant identity.
+Tenant-scoping wrapper over `ctx.apiProxy`'s session, workspace, and directory-browse RPC methods, for the single shared DSH container behind the MindPortalix reverse proxy. Requires `ctx.tenantContext` (`@mindportalix/dsh-tenant-context`) as the sole source of tenant identity.
 
-On activation, it monkey-patches the plain closures `ctx.apiProxy.sessions.{create,list,search}` and `ctx.apiProxy.workspace.*`, restoring the originals on disposal:
+On activation, it monkey-patches the plain closures `ctx.apiProxy.sessions.{create,list,search}`, `ctx.apiProxy.workspace.*`, and `ctx.apiProxy.host.{listDirectory,createDirectory}`, restoring the originals on disposal:
 
 - `session.create`: an explicit `cwd` or `workspaceId` must resolve under the caller's `$DSH_HOME/tenants/<tenantId>` root, or the call is rejected (`tenant-path-invalid` / `workspace-not-found`); an omitted `cwd`/`workspaceId` defaults to the tenant root explicitly (never the process's shared default project directory).
 - `session.list` / `session.search`: results are filtered to sessions whose `cwd` falls under the caller's tenant root (a session with no recorded `cwd` is dropped, not shown — fail closed); `search` reuses the filtered `session.list` as its visibility allowlist, since search results carry no `cwd` of their own.
@@ -10,6 +10,8 @@ On activation, it monkey-patches the plain closures `ctx.apiProxy.sessions.{crea
 - `workspace.create`: the `path` must resolve under the tenant root.
 - `workspace.rename` / `delete` / `insertBefore` / `insertSessionBefore`: the targeted `workspaceId` (and `beforeWorkspaceId` where present) must resolve to a tenant-visible workspace, or the call is rejected with `workspace-not-found` — the same code a genuinely unknown id produces, so existence is never disclosed cross-tenant.
 - `workspace.archiveSession`: ownership is proved by workspace membership (a workspace accounts every session it owns, including archived ones); a session owned by no tenant-visible workspace is rejected with `session-not-found`.
+- `host.listDirectory`: the "Add workspace" folder browser's backend, otherwise entirely unaware of tenant scoping (it lists `os.homedir()` — the container OS user's home, e.g. `/home/node` — by default and lets a caller browse anywhere the process can read). An explicit `path` must resolve under the tenant root or the call is rejected with `tenant-path-invalid`; an omitted `path` defaults to the tenant root explicitly, and every answer's `home` field is rewritten to the tenant root with `crumbs` cut to start there, so the browser's own "Home" shortcut and breadcrumb trail never point above it.
+- `host.createDirectory`: the browser's "New folder" action; the parent `path` must resolve under the tenant root or the call is rejected with `tenant-path-invalid`.
 
 Every wrapped method calls `ctx.tenantContext.requireCurrent()` first; with no tenant identity bound, it returns the structured `tenant-required` RPC error rather than proceeding unscoped.
 
