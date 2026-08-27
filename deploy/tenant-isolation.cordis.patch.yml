@@ -76,8 +76,15 @@
 # actually closes the path for tenants sharing this container; restates the
 # base row's other two presets verbatim (a patch replaces a row's whole
 # `config`, never merges into it).
+#
+# defaultPreset is workspace-write (not read-only): MindPortalix tenants are
+# expected to create files under their tenant root. Starting read-only forces
+# every write through bash/fs escalation (`sandbox_permissions` +
+# `justification`); small local models often omit the justification and fail
+# with "invalid escalation: sandbox_permissions requires a justification".
 - id: permission
   config:
+    defaultPreset: workspace-write
     presets:
       read-only:
         sandbox: read-only
