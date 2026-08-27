@@ -9,6 +9,11 @@ set -eu
 : "${DSH_WEB_HOST:=0.0.0.0}"
 : "${DSH_WEB_PORT:=3080}"
 
+# Landlock workspace-write grants write access only to /tmp and the session
+# workspace. npm/npx default to ~/.npm (EACCES under confinement). Compose
+# redirects caches to /tmp; ensure those dirs exist on every boot.
+mkdir -p /tmp/npm-cache /tmp/.cache /tmp/.config
+
 # MINDPORTALIX-TENANT-ISOLATION: multi-tenant isolation for this single
 # shared container (dsh-tenant-context / dsh-tenant-session-guard /
 # dsh-tenant-sandbox-local — see deploy/tenant-isolation.cordis.patch.yml's
