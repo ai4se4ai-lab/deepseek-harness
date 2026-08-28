@@ -6,6 +6,17 @@
 # Intended to run during the DSH image deps stage, after `pnpm install`.
 set -euo pipefail
 
+ARCH="$(uname -m)"
+if [[ "$ARCH" != "x86_64" ]]; then
+  # The x86-64-v1/v2 (SSE4.2) split this script works around is an x86-64
+  # concept only. /proc/cpuinfo on other architectures never has an
+  # "sse4_2" flag either, so the check below would false-positive into
+  # rebuilding libvips with x86-64 -march flags on a non-x86 compiler
+  # (e.g. "Compiler cc can not compile programs" on arm64/aarch64 hosts).
+  echo "mindportalix-dsh: host arch is ${ARCH}, not x86_64 — keeping sharp prebuilds"
+  exit 0
+fi
+
 if grep -qw sse4_2 /proc/cpuinfo 2>/dev/null; then
   echo "mindportalix-dsh: host has SSE4.2 — keeping sharp prebuilds"
   exit 0
