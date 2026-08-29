@@ -78,7 +78,7 @@ export function ProducedFiles({
   const limit = Math.min(paths.length, SHOWN_LIMIT)
   const [shownCount, setShownCount] = useState(limit)
   const rowRef = useRef<HTMLDivElement>(null)
-  const chipProbes = useRef<Array<HTMLButtonElement | null>>([])
+  const chipProbes = useRef<Array<HTMLElement | null>>([])
   const moreProbe = useRef<HTMLSpanElement>(null)
 
   useLayoutEffect(() => {
@@ -90,7 +90,7 @@ export function ProducedFiles({
       const styles = getComputedStyle(row)
       const gap = Number.parseFloat(styles.columnGap || styles.gap) || 0
       // React attaches every still-mounted callback ref before layout effects run.
-      const activeChipProbes = chipProbes.current.slice(0, limit) as HTMLButtonElement[]
+      const activeChipProbes = chipProbes.current.slice(0, limit) as HTMLElement[]
       const chips = activeChipProbes.map(probe => probe.getBoundingClientRect().width)
       const more = Array.from({ length: limit + 1 }, (_, candidate) => {
         if (paths.length === candidate) return undefined
@@ -117,18 +117,28 @@ export function ProducedFiles({
       <span className={css.label}>{t('produced.label')}</span>
       <div ref={rowRef} className={css.row} data-produced-files-row>
         {shown.map(path => (
-          <button
-            key={path}
-            type="button"
-            className={css.file}
-            // The full path is the disambiguator when two turns produce files
-            // that share a basename; the chip itself stays short.
-            title={path}
-            aria-label={t('produced.open', { name: path })}
-            onClick={() => { openFile(path) }}
-          >
-            {basename(path)}
-          </button>
+          canOpenPath ? (
+            <button
+              key={path}
+              type="button"
+              className={css.file}
+              // The full path is the disambiguator when two turns produce files
+              // that share a basename; the chip itself stays short.
+              title={path}
+              aria-label={t('produced.open', { name: path })}
+              onClick={() => { openFile(path) }}
+            >
+              {basename(path)}
+            </button>
+          ) : (
+            // No native opener on this deployment: inert, matching the
+            // tool-row's own path summary (ToolRow.tsx) — the file's content
+            // is one click away on that row's own entry, never a dead link
+            // here.
+            <span key={path} className={css.file} title={path}>
+              {basename(path)}
+            </span>
+          )
         ))}
         {hidden > 0 && <span className={css.more}>{moreLabel(t, hidden)}</span>}
       </div>
@@ -139,15 +149,28 @@ export function ProducedFiles({
       )}
       <div className={css.measure} aria-hidden="true">
         {paths.slice(0, limit).map((path, index) => (
-          <button
-            key={path}
-            ref={(node) => { chipProbes.current[index] = node }}
-            type="button"
-            tabIndex={-1}
-            className={`${css.file} ${css.probe}`}
-          >
-            {basename(path)}
-          </button>
+          // Mirrors the visible row's tag choice (button vs span): a probe
+          // measures the shown chip's actual box, and the two tags' UA
+          // default padding/border can differ where css.file does not reset them.
+          canOpenPath ? (
+            <button
+              key={path}
+              ref={(node) => { chipProbes.current[index] = node }}
+              type="button"
+              tabIndex={-1}
+              className={`${css.file} ${css.probe}`}
+            >
+              {basename(path)}
+            </button>
+          ) : (
+            <span
+              key={path}
+              ref={(node) => { chipProbes.current[index] = node }}
+              className={`${css.file} ${css.probe}`}
+            >
+              {basename(path)}
+            </span>
+          )
         ))}
         <span ref={moreProbe} className={`${css.more} ${css.probe}`} />
       </div>

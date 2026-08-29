@@ -14,6 +14,9 @@ import {
 import { bridge, type FetchHandler } from './http-bridge.ts'
 import { isTrustedApiRequest } from './api-request-trust.ts'
 import { API_PATH } from './api-path.ts'
+// MINDPORTALIX-TENANT-ISOLATION: type-only edge for ctx.get('tenantContext');
+// the tenant-isolation patch layer is what actually mounts the service.
+import type {} from '@mindportalix/dsh-tenant-context'
 import type {
   ConnectionRpcEndpointMatcher,
   ConnectionRpcHandler,
@@ -76,13 +79,20 @@ export class HostConnectionService extends Service implements HostConnectionHand
       fetch: (request) => {
         const endpoint = endpointFromPath(channel, new URL(request.url).pathname)
         const interceptor = this.interceptors.get(channel)
-        if (endpoint === undefined || interceptor === undefined || !interceptor.matches(endpoint)) {
-          return fallback.fetch(request)
+        const dispatch = (): Promise<Response> => {
+          if (endpoint === undefined || interceptor === undefined || !interceptor.matches(endpoint)) {
+            return fallback.fetch(request)
+          }
+          if (interceptor.options.authority === 'loopback' && !isTrustedApiRequest(request, [])) {
+            return Promise.resolve(new Response('forbidden', { status: 403 }))
+          }
+          return interceptor.fetchHandler.fetch(request)
         }
-        if (interceptor.options.authority === 'loopback' && !isTrustedApiRequest(request, [])) {
-          return Promise.resolve(new Response('forbidden', { status: 403 }))
-        }
-        return interceptor.fetchHandler.fetch(request)
+        // MINDPORTALIX-TENANT-ISOLATION: bind the trusted proxy's tenant id for this
+        // request's whole async chain (Fetch Request.headers path).
+        const tenantContext = this.ctx.get('tenantContext')
+        if (tenantContext === undefined) return dispatch()
+        return tenantContext.run(tenantContext.resolveTenant(Object.fromEntries(request.headers)), dispatch)
       },
     }
   }
@@ -105,7 +115,13 @@ export class HostConnectionService extends Service implements HostConnectionHand
           res.end('forbidden')
           return
         }
-        await bridge(req, res, fetchHandler)
+        // MINDPORTALIX-TENANT-ISOLATION: bind the trusted proxy's tenant id for this request's whole async chain.
+        const tenantContext = owner.get('tenantContext')
+        if (tenantContext === undefined) {
+          await bridge(req, res, fetchHandler)
+        } else {
+          await tenantContext.run(tenantContext.resolveTenant(req.headers), () => bridge(req, res, fetchHandler))
+        }
       },
     }
     return owner.effect(

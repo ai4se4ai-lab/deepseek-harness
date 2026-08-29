@@ -84,6 +84,28 @@ describe('connection client apply', () => {
     expect((await mount()).isLoopback).toBe(false)
   })
 
+  // MINDPORTALIX-TENANT-ISOLATION: `settingsAvailable` differs from
+  // `isLoopback` exactly when the served page carries the trusted-proxy
+  // global (see `apply()`'s TrustedSettingsGlobal comment).
+  it('settingsAvailable follows isLoopback on an unmodified page', async () => {
+    ;(globalThis as Win).location = { hostname: 'localhost', search: '' }
+    expect((await mount()).settingsAvailable).toBe(true)
+    ;(globalThis as Win).location = { hostname: '192.0.2.20', search: '' }
+    expect((await mount()).settingsAvailable).toBe(false)
+  })
+
+  it('settingsAvailable is true on a non-loopback page the trusted proxy vouches for', async () => {
+    ;(globalThis as Win).location = { hostname: '192.0.2.20', search: '' }
+    ;(globalThis as { __DSH_MP_SETTINGS_TRUSTED__?: true }).__DSH_MP_SETTINGS_TRUSTED__ = true
+    try {
+      const handle = await mount()
+      expect(handle.isLoopback).toBe(false)
+      expect(handle.settingsAvailable).toBe(true)
+    } finally {
+      delete (globalThis as { __DSH_MP_SETTINGS_TRUSTED__?: true }).__DSH_MP_SETTINGS_TRUSTED__
+    }
+  })
+
   it('start() hands out one loop, rejects a second consumer, and stop() aborts the streams', async () => {
     ;(globalThis as Win).location = { hostname: 'localhost', search: '?fixture' }
     const handle = await mount()

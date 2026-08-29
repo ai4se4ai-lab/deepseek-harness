@@ -10,6 +10,9 @@ import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
 import { assertTrustedAuthority, isTrustedApiRequest } from './api-request-trust.ts'
 import { HostConnectionService } from './rpc-host.ts'
 import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink.ts'
+// MINDPORTALIX-TENANT-ISOLATION: type-only edge for ctx.get('tenantContext');
+// the tenant-isolation patch layer is what actually mounts the service.
+import type {} from '@mindportalix/dsh-tenant-context'
 
 export type {
   ConnectionRpcAuthority,
@@ -57,7 +60,7 @@ export interface ConnectionConfig {
    * that is not a bare, canonical authority fails the plugin load.
    */
   trustedHosts?: string[]
-  /** Maximum buffered JSON body for every `/api` request. */
+  /** Maximum buffered JSON body for every `/api` request. Default: 300 MiB. */
   maxRequestBodyBytes?: number
 }
 
@@ -167,13 +170,42 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
         res.end('forbidden')
         return
       }
-      await bridge(req, res, fetchHandler, maxRequestBodyBytes)
+      // MINDPORTALIX-TENANT-ISOLATION: bind the trusted proxy's tenant id for this request's whole
+      // async chain — this is the actual /api entry point apiProxy (session.create, workspace.*, ...) is
+      // served through, ahead of createSharedFetchHandler's Fetch-Request dispatch above.
+      const tenantContext = ctx.get('tenantContext')
+      if (tenantContext === undefined) {
+        await bridge(req, res, fetchHandler, maxRequestBodyBytes)
+      } else {
+        await tenantContext.run(
+          tenantContext.resolveTenant(req.headers),
+          () => bridge(req, res, fetchHandler, maxRequestBodyBytes),
+        )
+      }
     },
   }
   ctx.effect(() => ctx.webServer.register(route), 'client-connection: /api route')
+  // MINDPORTALIX-TENANT-ISOLATION: tell the browser its own page is reachable
+  // only through the trusted MindPortalix proxy, so the client can treat the
+  // PRIVILEGED_METHODS plane (settings/credentials) as available without a
+  // loopback `location.hostname`. Checked lazily inside the listener (not at
+  // apply() time) because the tenant-isolation patch layer's `tenant-context`
+  // row may not have loaded yet when THIS row's apply() runs — index render
+  // happens per-request, well after boot completes, so by then it always has.
+  // Safe unconditionally: `docker-compose.dsh.yml` never publishes this
+  // process's port, so every request that reaches it already passed
+  // dsh-proxy.js's ticket/cookie authentication (see that file's header
+  // comment) — there is no direct path here for the tenant-context row to be
+  // mounted without the proxy also being the only way in.
+  ctx.on('webserver/index-inject', (table) => {
+    if (ctx.get('tenantContext') === undefined) return
+    table.push({ kind: 'global', name: '__DSH_MP_SETTINGS_TRUSTED__', value: true })
+  })
   ctx.inject(['apiProxy'], (apiCtx) => {
     assertImageBodyCapacity(apiCtx, maxRequestBodyBytes)
-    const downlinks = new WebSocketDownlinks(apiCtx.apiProxy)
+    // MINDPORTALIX-TENANT-ISOLATION: optional — undefined when the
+    // tenant-isolation patch layer is not mounted.
+    const downlinks = new WebSocketDownlinks(apiCtx.apiProxy, apiCtx.get('tenantContext'))
     const registerDownlink = (
       path: string,
       handle: WebUpgradeRoute['handler'],

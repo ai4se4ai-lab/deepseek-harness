@@ -33,6 +33,7 @@ async function bench(isLoopback = true, settings?: object, services: object = {}
   ctx.provide('connection', {
     api: settings === undefined ? services : { ...services, settings },
     isLoopback,
+    settingsAvailable: isLoopback,
   } as never)
   await ctx.plugin({ inject: [...settingsInject], apply: settingsApply }).await()
   return { ctx, slots: ctx.get('slots') as SlotRegistry, locale }
@@ -177,7 +178,7 @@ describe('pushed invalidations', () => {
     await b.ctx.plugin({ inject: [...inject], apply }).await()
     // The fake wire face has no methods: a fetch attempt would throw.
     b.ctx.remote.$dispatch('settings/document-updated', ['llm-pi-ai', 1])
-    b.ctx.remote.$dispatch('credentials/updated', ['OPENAI_API_KEY'])
+    b.ctx.remote.$dispatch('credentials/reference-updated', ['OPENAI_API_KEY'])
     b.ctx.remote.$dispatch('llm/adapters-updated', [])
     b.ctx.emit('connection/reset')
   })
@@ -210,7 +211,7 @@ describe('pushed invalidations', () => {
     )()
     injected.controller.store.update((state) => { state.status = 'ready' })
     const load = vi.spyOn(injected.controller, 'load').mockResolvedValue()
-    b.ctx.remote.$dispatch('credentials/updated', ['DEEPSEEK_API_KEY'])
+    b.ctx.remote.$dispatch('credentials/reference-updated', ['DEEPSEEK_API_KEY'])
     expect(load).toHaveBeenCalledTimes(1)
   })
 

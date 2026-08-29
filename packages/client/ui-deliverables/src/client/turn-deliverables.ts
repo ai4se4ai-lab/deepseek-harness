@@ -157,6 +157,11 @@ export function basename(path: string): string {
  * @param paths - The turn's produced paths (tool order, already deduped).
  * @param openFile - The chat view's file opener.
  * @param label - Localizes the accessible open-label for a resolved path.
+ * @param canOpenPath - Whether this deployment can hand a path to a native
+ * application; false declines every mention (same `undefined` a matched-but-
+ * ambiguous basename already produces), leaving inline code inert rather than
+ * a dead link — the mutation's own tool row is one click away with the same
+ * content.
  * @returns The resolver MarkdownText consumes; the full path rides `title`,
  * the same disambiguator the row's chips carry.
  */
@@ -164,9 +169,11 @@ export function producedFileMentions(
   paths: readonly string[],
   openFile: (path: string) => void,
   label: (path: string) => string,
+  canOpenPath: boolean,
 ): MarkdownFileMentions {
   return {
     resolve(value) {
+      if (!canOpenPath) return undefined
       const path = paths.includes(value) ? value : onlyPathWithBasename(paths, value)
       if (path === undefined) return undefined
       return { open: () => { openFile(path) }, label: label(path), title: path }

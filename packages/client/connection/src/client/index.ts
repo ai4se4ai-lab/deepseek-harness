@@ -8,7 +8,7 @@ import type { HostDescription, IApiClient } from './api.ts'
 import { ConnectionController, type ConnectionConfig, type ConnectionSinks, type ConnectionState } from './connection.ts'
 import { FixtureApiClient } from './fixture.ts'
 import { WebApiClient } from './web-api-client.ts'
-import { createWebConnectionRpc } from './rpc.ts'
+import { createWebConnectionRpc, type RpcFetch } from './rpc.ts'
 import { isLoopbackHostname } from '../loopback-hostname.ts'
 import type { ClientConnectionRpc } from '../rpc.ts'
 
@@ -40,6 +40,7 @@ export {
 // controller remains package-internal.
 export type { ConnectionConfig, ConnectionSinks, ConnectionState }
 export type { ClientConnectionRpc } from '../rpc.ts'
+export type { RpcFetch } from './rpc.ts'
 
 /** Observable Host description published by each completed connection handshake. */
 export interface HostDescriptionSource {
@@ -53,6 +54,44 @@ export interface HostDescriptionSource {
 export const inject: string[] = []
 
 /**
+ * Carrier override installed on the page global before plugin boot. The served
+ * web app leaves it unset and gets HTTP + WebSocket; a shell that owns a
+ * different physical transport (the worker preview's postMessage tunnel)
+ * provides both halves here instead of forking this plugin.
+ */
+export interface ClientTransportHooks {
+  /** Build the API carrier: unary calls plus the two downstream event streams. */
+  createApiClient(): IApiClient
+  /** Transport for generic unary RPC channels (the Typert gateway). */
+  fetch: RpcFetch
+  /**
+   * Bundle transport for the module system, present when the carrier also owns
+   * bundle bytes (the worker tunnel). Absent in the served web app, whose
+   * bundles load over HTTP.
+   */
+  loadBundle?(url: string): Promise<void>
+}
+
+/** Page global carrying {@link ClientTransportHooks}; absent in the served web app. */
+interface ClientTransportGlobal {
+  __DSH_TRANSPORT__?: ClientTransportHooks
+}
+
+/**
+ * MINDPORTALIX-TENANT-ISOLATION: page global the served index.html carries
+ * (via `webserver/index-inject`, see the `client-connection` host plugin's
+ * `apply()`) exactly when this page's own Host webserver is reachable only
+ * through the trusted MindPortalix DSH proxy — never set by unmodified
+ * upstream DSH. Distinct from {@link isLoopbackHostname}: it answers "is the
+ * settings/credentials wire API safe to call", not "is this the same
+ * machine" — native-path-open features must keep using plain loopback, since
+ * a path the container can open is meaningless on the browser's own machine.
+ */
+interface TrustedSettingsGlobal {
+  __DSH_MP_SETTINGS_TRUSTED__?: true
+}
+
+/**
  * The ctx.connection service API: the API client plus a one-shot
  * controller starter (the runtime plugin supplies sinks when its object layer
  * is ready — connection stays consumer-agnostic).
@@ -62,6 +101,15 @@ export interface ConnectionHandle {
   readonly api: IApiClient
   /** Whether the current page authority is loopback; non-browser contexts default to true. */
   readonly isLoopback: boolean
+  /**
+   * Whether the settings/credentials wire API is safe to call from this page:
+   * true for a loopback origin, or for a page the serving Host itself vouches
+   * for as reachable only through a trusted proxy (MINDPORTALIX-TENANT-ISOLATION;
+   * see {@link TrustedSettingsGlobal}). Always `isLoopback` on unmodified
+   * upstream DSH. Native-path-open features must keep reading `isLoopback`
+   * instead — this field says nothing about running on the same machine.
+   */
+  readonly settingsAvailable: boolean
   /** Generation-scoped Host facts, including the account home and native path-open capability. */
   readonly hostDescription: HostDescriptionSource
   /** Generic logical RPC channels over the same Connection transport. */
@@ -85,8 +133,9 @@ export function apply(ctx: Context): void {
   const pageLocation = typeof location === 'undefined' ? undefined : location
   const fixture = pageLocation !== undefined && new URLSearchParams(pageLocation.search).has('fixture')
   const fixtureClient = fixture ? new FixtureApiClient() : undefined
-  const api: IApiClient = fixtureClient ?? new WebApiClient()
-  const rpc = fixtureClient?.rpc ?? createWebConnectionRpc()
+  const transport = (globalThis as ClientTransportGlobal).__DSH_TRANSPORT__
+  const api: IApiClient = fixtureClient ?? transport?.createApiClient() ?? new WebApiClient()
+  const rpc = fixtureClient?.rpc ?? createWebConnectionRpc(transport?.fetch)
   let started = false
   let description: HostDescription | undefined
   const descriptionListeners = new Set<() => void>()
@@ -101,9 +150,12 @@ export function apply(ctx: Context): void {
       }
     }
   }
+  const isLoopback = pageLocation === undefined || isLoopbackHostname(pageLocation.hostname)
   const handle: ConnectionHandle = {
     api,
-    isLoopback: pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),
+    isLoopback,
+    settingsAvailable: isLoopback
+      || (globalThis as TrustedSettingsGlobal).__DSH_MP_SETTINGS_TRUSTED__ === true,
     hostDescription: {
       getSnapshot: () => description,
       subscribe: (listener) => {

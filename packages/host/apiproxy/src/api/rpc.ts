@@ -41,10 +41,28 @@ export interface RpcErrorDetailsMap {
   'workspace-invalid-path': { path: string }
   'workspace-name-conflict': { name: string }
   'workspace-move-invalid': { workspaceId: string; sessionId: SessionId; beforeSessionId?: SessionId }
+  // MINDPORTALIX-TENANT-ISOLATION: a session.create/workspace.create path (or
+  // a resolved workspace's path) fell outside the caller's tenant root.
+  // Reported here rather than reusing 'workspace-invalid-path' so a tenant
+  // clamp rejection is distinguishable from "not a real directory" in client
+  // diagnostics and tests, without changing that code's existing meaning.
+  'tenant-path-invalid': { path: string }
+  // MINDPORTALIX-TENANT-ISOLATION: a tenant-scoped method ran with no tenant
+  // identity bound (ctx.tenantContext.current() === undefined) — the guard's
+  // fail-closed rejection, never a silent unscoped fallback.
+  'tenant-required': {}
   'directory-unreadable': { path: string }
   'directory-exists': { path: string }
   'directory-create-failed': { path: string }
   'directory-picker-unavailable': { capability: string }
+  /**
+   * `openTarget` refused before attempting a native open: `canOpenPaths()`
+   * answered false (headless/containerized host, no desktop signal), so
+   * spawning an OS opener would only fail with a raw ENOENT. A client sees
+   * this instead of that spawn failure and can offer its own in-app fallback
+   * (e.g. the file-mutation row's already-expandable diff/content view).
+   */
+  'native-open-unavailable': {}
   'agent-preset-read-only': { agentPreset: string; reason: string }
   'agent-preset-locked': { sessionId: SessionId; agentPreset: string }
   'agent-preset-conflict': { sessionId: SessionId; requestedPreset: string; existingPreset?: string }

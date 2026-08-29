@@ -319,7 +319,12 @@ export abstract class ReleaseFamily {
 /** Release packages and apps: one shared version across the whole family. */
 class DshFamily extends ReleaseFamily {
   readonly id = 'dsh'
-  readonly patterns = ['packages/!(experimental)/*/package.json', 'apps/*/package.json'] as const
+  // MINDPORTALIX-TENANT-ISOLATION: packages/tenant/* is excluded the same way
+  // packages/experimental/* is — private, fork-owned infrastructure under a
+  // deliberately non-@deepseek-ai npm scope, never a member of this repository's
+  // own release sequence (see scripts/check-workspace-constraints.ts's matching
+  // exemption and each packages/tenant/* package's own module doc comment).
+  readonly patterns = ['packages/!(experimental|tenant)/*/package.json', 'apps/*/package.json'] as const
   readonly tagPrefix = 'dsh-v'
 
   /** Require current artifacts from a complete official client build. */

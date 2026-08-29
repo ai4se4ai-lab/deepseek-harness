@@ -8,6 +8,9 @@ import type {
   ApiProxy, HostFrame, MuxFrame, RpcRequest, ServerRequest,
 } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
+// MINDPORTALIX-TENANT-ISOLATION: optional tenant-identity service (undefined
+// when the tenant-isolation patch layer is not mounted).
+import type { TenantContextService } from '@mindportalix/dsh-tenant-context'
 
 type Frame = MuxFrame | HostFrame
 
@@ -52,8 +55,13 @@ export class WebSocketDownlinks {
   private readonly server = new WebSocketServer({ noServer: true })
   private readonly pumps = new Set<Promise<void>>()
 
-  /** @param api - host API supplying the typed event streams. */
-  constructor(private readonly api: ApiProxy) {}
+  /**
+   * @param api - host API supplying the typed event streams.
+   * @param tenantContext - MINDPORTALIX-TENANT-ISOLATION: optional tenant-identity
+   * service; `undefined` when the tenant-isolation patch layer is not mounted, in
+   * which case no tenant is bound and downstream consumers see no tenant at all.
+   */
+  constructor(private readonly api: ApiProxy, private readonly tenantContext?: TenantContextService) {}
 
   /**
    * Upgrade one socket and pump the mux stream until either side closes.
@@ -102,6 +110,11 @@ export class WebSocketDownlinks {
     head: Buffer,
     open: (signal: AbortSignal) => AsyncIterable<RpcRequest<F>>,
   ): void {
+    // MINDPORTALIX-TENANT-ISOLATION: resolved once at upgrade time from the
+    // trusted proxy header; the whole connection lifetime below (opening the
+    // event stream and pumping every frame across every await/resumption of
+    // its async generator) runs bound to it.
+    const tenantId = this.tenantContext?.resolveTenant(req.headers)
     this.server.handleUpgrade(req, socket, head, (websocket) => {
       const abort = new AbortController()
       websocket.once('close', () => { abort.abort() })
@@ -109,7 +122,8 @@ export class WebSocketDownlinks {
       websocket.once('message', () => {
         websocket.close(1008, 'downlink only')
       })
-      const pump = this.pump(websocket, open(abort.signal), abort)
+      const runPump = (): Promise<void> => this.pump(websocket, open(abort.signal), abort)
+      const pump = this.tenantContext === undefined ? runPump() : this.tenantContext.run(tenantId, runPump)
       this.pumps.add(pump)
       void pump.then(() => { this.pumps.delete(pump) })
     })

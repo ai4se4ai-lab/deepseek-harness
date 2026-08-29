@@ -83,6 +83,7 @@
       "@deepseek-ai/dsh-commands/types": ["./packages/interaction/commands/src/types.ts"],
       "@deepseek-ai/dsh-jobs/brand": ["./packages/jobs/jobs/src/brand.ts"],
       "@deepseek-ai/dsh-credentials/types": ["./packages/credentials/credentials/src/types.ts"],
+      "@deepseek-ai/dsh-authorization/types": ["./packages/credentials/authorization/src/types.ts"],
       "@deepseek-ai/dsh-settings/types": ["./packages/settings/settings/src/types.ts"],
       "@deepseek-ai/dsh-api-remotes/types": ["./packages/api/remotes/src/types.ts"],
       "@deepseek-ai/dsh-api-remotes/invariant": ["./packages/api/remotes/src/invariant.ts"],
@@ -285,6 +286,13 @@
         "./packages/test-support/*/src",
         "./packages/host/*/src",
         "./packages/client/*/src"
+      ],
+      // MINDPORTALIX-TENANT-ISOLATION: a deliberately different npm scope
+      // (never @deepseek-ai/dsh-*, so these names can never collide with an
+      // upstream package on a future sync) for the fork-owned multi-tenant
+      // hardening packages under packages/tenant/*.
+      "@mindportalix/*": [
+        "./packages/tenant/*/src"
       ]
     }
   }

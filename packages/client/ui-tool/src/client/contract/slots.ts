@@ -37,8 +37,15 @@ export interface ToolCallOwnerProps {
   cwd?: string | undefined
   /** Host account home; POSIX home-rooted summaries display as `~`. */
   home?: string | undefined
-  /** Open a Tool argument path through the Host. */
-  openFile: (path: string) => void
+  /**
+   * Open a Tool argument path through the Host; undefined when this
+   * deployment cannot hand a path to a native application (ToolCallTree
+   * already gated the caller's `openFile` on `isLoopback`/`canOpenPath` — a
+   * view never needs to re-check). A file-tool view renders its path as
+   * plain text instead of a link when absent, since the whole row still
+   * expands to show that Tool's own content/diff.
+   */
+  openFile: ((path: string) => void) | undefined
   /** Inspect this call in the trajectory view when available. */
   inspect?: (() => void) | undefined
 }
@@ -46,8 +53,10 @@ export interface ToolCallOwnerProps {
 /** Full props of a registered atomic Tool view. */
 export type ToolCallViewProps = PropsRuntime<'tool.call.toolview'>
 
-/** Injected Host description for POSIX home-path display. */
+/** Injected Host description for POSIX home-path display, plus the page-authority fact `openFile`'s gate needs. */
 export type ToolHostDescriptionInjected = {
+  /** Whether the current page authority is loopback; combines with `hostDescription().canOpenPath` to gate `openFile`. */
+  isLoopback: boolean
   hooks: {
     /** Current generation's Host description, bound by the slot renderer. */
     hostDescription: HostDescriptionSource

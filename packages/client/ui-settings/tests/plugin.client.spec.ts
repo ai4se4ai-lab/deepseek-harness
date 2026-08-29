@@ -21,6 +21,7 @@ function bench() {
   ctx.provide('connection', {
     api: { settings: { describe: describeCall } },
     isLoopback: true,
+    settingsAvailable: true,
   } as never)
   new TestRemote(ctx)
   return { ctx, describeCall, fiber: ctx.plugin({ inject: [...inject], apply }) }
