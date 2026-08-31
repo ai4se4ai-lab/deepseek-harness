@@ -39,6 +39,29 @@
   config:
     maxBytes: 65536
 
+# ── knowledge (OKF) ─────────────────────────────────────────────────────────
+
+# Same as the `standard` preset: `ctx.okf` plus the model-facing OKF tools and
+# the bundle-catalogue context injector, in a per-agent `isolate` realm.
+- id: okf
+  name: cordis:group
+  group: true
+  isolate:
+    okf: true
+  config:
+    - id: okf-bundle
+      name: '@mindportalix/dsh-okf-bundle'
+    - id: okf-context
+      name: '@mindportalix/dsh-okf-context'
+      config:
+        maxBytes: 32768
+        refreshIntervalMs: 0
+    - id: tool-okf
+      name: '@mindportalix/dsh-tool-okf'
+      config:
+        producer: dsh
+        version: unversioned
+
 # ── shell ───────────────────────────────────────────────────────────────────
 
 # `shell-env` stays in the HOST composition: `apps/cli/src/web.ts` injects it to

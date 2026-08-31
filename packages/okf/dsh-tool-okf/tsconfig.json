@@ -1,0 +1,18 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    { "path": "../dsh-okf-core" },
+    { "path": "../dsh-okf-bundle" },
+    { "path": "../../llm/llm" },
+    { "path": "../../core/tools" },
+    { "path": "../../core/agent" },
+    { "path": "../../runtime-diagnostics/invariants" }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "name": "@mindportalix/dsh-okf-dataplex",
+  "description": "Lossless translation between clean OKF frontmatter and the Knowledge Catalog (Dataplex) 'okf' aspect staging form, plus a push/pull seam over the kcmd CLI.",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./invariant": {
+      "types": "./lib/types/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/invariant.js",
+    "lib/types/**/*.d.ts"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@mindportalix/dsh-okf-core": "workspace:^"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-invariants": "workspace:^",
+    "@mindportalix/dsh-okf-bundle": "workspace:^",
+    "@deepseek-ai/cordis": "workspace:^"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-invariants": "workspace:^",
+    "@mindportalix/dsh-okf-bundle": "workspace:^",
+    "@deepseek-ai/cordis": "workspace:^"
+  }
+}

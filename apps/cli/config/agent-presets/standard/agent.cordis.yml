@@ -32,6 +32,33 @@
   config:
     maxBytes: 65536
 
+# ── knowledge (OKF) ─────────────────────────────────────────────────────────
+
+# The agent maintains an Open Knowledge Format bundle for this user. `okf-bundle`
+# publishes `ctx.okf` and is a service, so it sits in an `isolate` realm like the
+# other per-agent services below; it is a stateless resolver over the filesystem
+# (the bundle on disk is the shared state) and reads tenant scope from the host
+# `ctx.tenantContext` when present, so a per-agent instance is correct. `tool-okf`
+# and `okf-context` are the model-facing halves.
+- id: okf
+  name: cordis:group
+  group: true
+  isolate:
+    okf: true
+  config:
+    - id: okf-bundle
+      name: '@mindportalix/dsh-okf-bundle'
+    - id: okf-context
+      name: '@mindportalix/dsh-okf-context'
+      config:
+        maxBytes: 32768
+        refreshIntervalMs: 0
+    - id: tool-okf
+      name: '@mindportalix/dsh-tool-okf'
+      config:
+        producer: dsh
+        version: unversioned
+
 # ── shell ───────────────────────────────────────────────────────────────────
 
 # `shell-env` stays in the HOST composition: `apps/cli/src/web.ts` injects it to
