@@ -110,9 +110,23 @@ describe('okf_write_concept', () => {
   })
 
   it('rejects frontmatter that is not an object', async () => {
-    const res = await run('okf_write_concept', { id: 'x', frontmatter: 'nope', body: 'x\n' })
-    expect(res.isError).toBe(true)
-    expect(text(res)).toMatch(/must be a JSON object/)
+    for (const frontmatter of ['nope', ['type', 'Metric'], 42]) {
+      const res = await run('okf_write_concept', { id: 'x', frontmatter, body: 'x\n' })
+      expect(res.isError).toBe(true)
+      expect(text(res)).toMatch(/must be a JSON object/)
+    }
+  })
+
+  it('accepts frontmatter delivered as a JSON-encoded object string', async () => {
+    const res = await run('okf_write_concept', {
+      id: 'terms/generative-ai',
+      frontmatter: JSON.stringify({ type: 'Definition', title: 'Generative AI' }),
+      body: '# Generative AI\n\ntext\n',
+    })
+    expect(res.isError).toBeFalsy()
+    const read = await ctx.okf.readConcept('terms/generative-ai')
+    expect(read.frontmatter.type).toBe('Definition')
+    expect(read.frontmatter.title).toBe('Generative AI')
   })
 
   it('maps a non-conformant write to OKF_TOOL_REFUSED', async () => {

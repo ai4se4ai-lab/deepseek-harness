@@ -68,10 +68,22 @@ function summaryLine(c: ConceptSummary): string {
 }
 
 function asObject(value: unknown, field: string): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+  // A `type: 'json'` parameter admits any JSON value, and some models emit a
+  // nested object argument JSON-encoded as a string. Accept that one encoding
+  // level here rather than failing the write; a string that is not itself a
+  // JSON object still fails.
+  let candidate: unknown = value
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate)
+    } catch {
+      throw new HarnessError(`${field} must be a JSON object`, 'OKF_TOOL_INVALID_INPUT')
+    }
+  }
+  if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
     throw new HarnessError(`${field} must be a JSON object`, 'OKF_TOOL_INVALID_INPUT')
   }
-  return value as Record<string, unknown>
+  return candidate as Record<string, unknown>
 }
 
 /**
