@@ -66,6 +66,13 @@
       config:
         maxNoteBytes: 8192
 
+    # Host side of the '/upload' command: writes the chosen file under
+    # <session cwd>/files/ and emits workspace/file-added for @ discovery.
+    - id: workspace-upload
+      name: '@deepseek-ai/dsh-workspace-upload'
+      config:
+        maxBytes: 10485760
+
     # Browser Session export: `/export` command plus the shared download dialog.
     - id: session-log-download
       name: '@deepseek-ai/dsh-session-log-export'
@@ -247,6 +254,11 @@
 
     - id: ui-skill
       name: '@deepseek-ai/dsh-client-ui-skill'
+
+    # The '/upload' command: native file picker -> workspaceUpload.put ->
+    # `@files/<name>` spliced into the draft.
+    - id: ui-upload
+      name: '@deepseek-ai/dsh-client-ui-upload'
 
     - id: ui-subagent
       name: '@deepseek-ai/dsh-client-ui-subagent'

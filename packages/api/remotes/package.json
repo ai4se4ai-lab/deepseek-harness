@@ -75,6 +75,7 @@
     "@deepseek-ai/dsh-session-reference": "workspace:^",
     "@deepseek-ai/dsh-settings": "workspace:^",
     "@deepseek-ai/dsh-typert-registry": "workspace:^",
+    "@deepseek-ai/dsh-workspace-upload": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^"
   },
   "devDependencies": {
@@ -95,6 +96,7 @@
     "@deepseek-ai/dsh-session-reference": "workspace:^",
     "@deepseek-ai/dsh-settings": "workspace:^",
     "@deepseek-ai/dsh-typert-registry": "workspace:^",
+    "@deepseek-ai/dsh-workspace-upload": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^"
   }
 }

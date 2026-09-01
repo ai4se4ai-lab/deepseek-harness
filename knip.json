@@ -426,6 +426,11 @@
         "zod"
       ]
     },
+    "packages/context/workspace-upload": {
+      "ignoreDependencies": [
+        "zod"
+      ]
+    },
     "packages/session/session-checkpoint-policy": {
       "entry": [
         "tests/**/*.spec.ts",
@@ -664,6 +669,11 @@
     "packages/bundle/web-app": {
       "ignoreDependencies": [
         "@deepseek-ai/.+"
+      ]
+    },
+    "packages/client/ui-upload": {
+      "ignoreDependencies": [
+        "@deepseek-ai/dsh-client-ui-slots"
       ]
     }
   }

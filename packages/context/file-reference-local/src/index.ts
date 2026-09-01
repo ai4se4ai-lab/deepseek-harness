@@ -13,6 +13,8 @@ import FileReferenceService, {
 } from '@deepseek-ai/dsh-file-reference'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
+// Type-only: pulls the `workspace/file-added` cordis event declaration.
+import type {} from '@deepseek-ai/dsh-workspace-upload/types'
 import {
   DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES,
   DEFAULT_FILE_SEARCH_MAX_ENTRIES,
@@ -97,6 +99,12 @@ export class LocalFileReferenceService extends FileReferenceService {
     ctx.on('session/event', (session, event) => {
       if (event.type !== 'tool/result') return
       const agent = ctx.agents.get(session.id)
+      if (agent !== undefined) this.searches.get(agent)?.invalidate()
+    })
+    // A user upload writes into `files/` without any tool result; drop the
+    // cached index so an `@files/…` completion sees the new file at once.
+    ctx.on('workspace/file-added', ({ sessionId }) => {
+      const agent = ctx.agents.get(sessionId)
       if (agent !== undefined) this.searches.get(agent)?.invalidate()
     })
     ctx.effect(() => async () => {
