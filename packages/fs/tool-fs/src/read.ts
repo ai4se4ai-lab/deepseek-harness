@@ -7,8 +7,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView, ReadResultView, ToolResult } from '@deepseek-ai/dsh-tools'
-import type {} from '@deepseek-ai/dsh-fs'
+import { FsError } from '@deepseek-ai/dsh-fs'
+import type { FsTarget } from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-system-prompt'
+import { extractDocumentText, looksLikePdf } from './extract-document.ts'
 import { buildWindow, formatReadOutput, langFromPath, readMetaFromMeta } from './read-render.ts'
 import { resolveRegularReadTarget } from './read-target.ts'
 
@@ -21,6 +23,20 @@ export const READ_LIMIT = 2000
  */
 export const STREAM_MIN_SIZE = 10 * 1024 * 1024
 
+/**
+ * Default cap on the bytes read from a non-UTF-8 file before text extraction
+ * (the `readExtractMaxBytes` config). A file larger than this is refused with
+ * `FS_TOO_LARGE` rather than buffered whole.
+ */
+export const EXTRACT_MAX_BYTES = 25 * 1024 * 1024
+
+/**
+ * Default cap on the characters kept from an extracted text layer (the
+ * `readExtractMaxChars` config). Beyond it the window ends with an explicit
+ * truncation line.
+ */
+export const EXTRACT_MAX_CHARS = 400_000
+
 /** Resolved read-tool caps — plugin config after defaulting (see `Config` in index.ts). */
 export interface ReadToolCaps {
   /** Default and maximum number of lines returned by one call. */
@@ -31,6 +47,10 @@ export interface ReadToolCaps {
   maxBytes: number
   /** Files at or above this size stream; smaller files read whole into memory. */
   streamMinSize: number
+  /** Byte cap on a non-UTF-8 file whose text layer (e.g. a PDF's) is extracted instead. */
+  extractMaxBytes: number
+  /** Character cap on the extracted text layer before an explicit truncation line. */
+  extractMaxChars: number
 }
 
 /** Validated `read` arguments after defaulting. */
@@ -62,6 +82,48 @@ export function parseReadArgs(args: { file_path: string; offset?: number; limit?
 }
 
 /**
+ * Decoded text chunks for one read: the backend's UTF-8 stream/whole-file read,
+ * or — when the backend refuses a **PDF** as non-UTF-8 — a single chunk holding
+ * its extracted text layer, so a `.pdf` reads like a `.md`. A non-PDF binary
+ * keeps the backend's original `FS_NOT_TEXT` error; a PDF with no recoverable
+ * text re-throws `FS_NOT_TEXT` carrying why (scanned, encrypted, corrupt).
+ * @param ctx - plugin context providing `ctx.fs`.
+ * @param target - the resolved regular-file target.
+ * @param size - the target's byte size from the read's single stat, or `undefined`.
+ * @param signal - the tool execution's cancellation signal.
+ * @param caps - resolved read caps; `streamMinSize` routes text, `extractMax*` bound extraction.
+ * @returns the decoded chunks to window.
+ */
+async function readChunks(
+  ctx: Context,
+  target: FsTarget,
+  size: number | undefined,
+  signal: AbortSignal | undefined,
+  caps: ReadToolCaps,
+): Promise<AsyncIterable<string> | Iterable<string>> {
+  try {
+    return size === undefined || size >= caps.streamMinSize
+      ? await ctx.fs.streamText(target, signal)
+      : [await ctx.fs.readText(target, signal)]
+  } catch (error: unknown) {
+    if (!(error instanceof FsError) || error.code !== 'FS_NOT_TEXT') throw error
+    const bytes = await ctx.fs.readBytes(target, signal, caps.extractMaxBytes)
+    // Only a PDF has a text layer worth extracting; every other binary keeps
+    // the backend's own rejection so its error message is unchanged.
+    if (!looksLikePdf(bytes)) throw error
+    const extracted = await extractDocumentText(bytes, caps.extractMaxChars)
+    if (extracted.text.length === 0) {
+      /* v8 ignore next -- extractDocumentText always sets `note` alongside empty text; the literal is the type-level fallback only. */
+      const why = extracted.note ?? 'no readable text layer'
+      throw new FsError(`cannot read "${target.displayPath}": ${why}`, 'FS_NOT_TEXT')
+    }
+    return [extracted.truncated
+      ? `${extracted.text}\n[… document text truncated at ${caps.extractMaxChars} characters; the file continues …]`
+      : extracted.text]
+  }
+}
+
+/**
  * Register the `read` tool and its system-prompt guidance.
  * @param ctx - the plugin context; registrations are effects scoped to it, and execution uses its `fs` service.
  * @param caps - the deployment's resolved read caps (plugin config after defaulting).
@@ -70,12 +132,12 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
   ctx.systemPrompt.section({
     name: 'tool:read',
     order: 100,
-    text: 'Use the read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files.',
+    text: 'Use the read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files. A PDF is read as its extracted text layer; a scanned or image-only PDF has no text to return.',
   })
 
   ctx.tools.register(defineTool({
     name: 'read',
-    description: 'Read a UTF-8 text file and return line-numbered content.',
+    description: 'Read a text file and return line-numbered content. A PDF is returned as its extracted plain-text layer.',
     parameters: {
       file_path: { type: 'string', required: true, description: 'Path to read, resolved by the filesystem backend.' },
       offset: { type: 'number', description: '1-based first line to return. Defaults to 1.' },
@@ -140,10 +202,10 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
       const { target, info } = await resolveRegularReadTarget(ctx, exec, input.filePath)
 
       // Stream when the file is large OR size is unknown, so a size-less backend
-      // never buffers an arbitrarily large file.
-      const chunks = info.size === undefined || info.size >= caps.streamMinSize
-        ? await ctx.fs.streamText(target, exec.signal)
-        : [await ctx.fs.readText(target, exec.signal)]
+      // never buffers an arbitrarily large file. A file the backend refuses as
+      // non-UTF-8 falls back to a one-shot text-layer extraction (e.g. a PDF),
+      // so the model reads a `.pdf` the same way it reads a `.md`.
+      const chunks = await readChunks(ctx, target, info.size, exec.signal, caps)
       const window = await buildWindow(
         chunks,
         { offset: input.offset, limit: input.limit, maxLineLength: caps.maxLineLength, maxBytes: caps.maxBytes },

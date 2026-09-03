@@ -227,6 +227,7 @@
     { "path": "./packages/tenant/dsh-tenant-context" },
     { "path": "./packages/tenant/dsh-tenant-session-guard" },
     { "path": "./packages/tenant/dsh-tenant-sandbox-local" },
+    { "path": "./packages/tenant/dsh-tenant-credentials-local" },
     { "path": "./packages/okf/dsh-okf-core" },
     { "path": "./packages/okf/dsh-okf-bundle" },
     { "path": "./packages/okf/dsh-tool-okf" },

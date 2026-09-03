@@ -46,6 +46,9 @@ interface Fixture {
   searchItems: { sessionId: string; snippet: string }[]
   workspaces: FakeWorkspace[]
   archivedSessionIds: string[]
+  /** Frames the fake `events.mux` / `events.host` streams emit, in order. */
+  muxFrames?: unknown[]
+  hostFrames?: unknown[]
 }
 
 function fakeApiProxy(fixture: Fixture): ApiProxy {
@@ -115,15 +118,36 @@ function fakeApiProxy(fixture: Fixture): ApiProxy {
     createDirectory: async (request: RpcRequest<{ path: string; name: string }>) =>
       ({ rpcId: request.rpcId, result: { ok: true, value: { path: join(request.payload.path, request.payload.name) } } }),
   }
-  return { sessions, workspace, host } as unknown as ApiProxy
+  async function* iterate<F>(frames: readonly F[]): AsyncIterable<F> {
+    for (const item of frames) yield item
+  }
+  const events = {
+    mux: () => iterate(fixture.muxFrames ?? []),
+    host: () => iterate(fixture.hostFrames ?? []),
+  }
+  return { sessions, workspace, host, events } as unknown as ApiProxy
 }
 
 function fakeWorkspaceRegistry(workspaces: FakeWorkspace[]): Context['workspaceRegistry'] {
-  const byId = new Map(workspaces.map(w => [w.workspaceId, w]))
+  // Registry entries expose `.id` (the real Workspace record's field); the wire
+  // WorkspaceView renames it to `workspaceId`. Alias both so the guard's
+  // `String(candidate.id)` and the tests' `workspaceId` both resolve.
+  const entries = workspaces.map(w => ({ ...w, id: w.workspaceId }))
+  const byId = new Map(entries.map(w => [w.workspaceId, w]))
   return {
     get: (id: unknown) => byId.get(String(id)),
-    list: () => workspaces,
+    list: () => entries,
   } as unknown as Context['workspaceRegistry']
+}
+
+/** Fake `ctx.sessions` store: resolves an attached session id to its recorded cwd from the fixture. */
+function fakeSessionStore(fixture: Fixture): Context['sessions'] {
+  return {
+    get: (id: unknown) => {
+      const found = fixture.sessions.find(session => session.sessionId === id)
+      return found?.cwd === undefined ? undefined : { header: { cwd: found.cwd } }
+    },
+  } as unknown as Context['sessions']
 }
 
 let dshHome: string
@@ -147,6 +171,7 @@ async function setup(fixture: Fixture): Promise<{ ctx: Context; api: ApiProxy }>
   const api = fakeApiProxy(fixture)
   ctx.provide('apiProxy', api)
   ctx.provide('workspaceRegistry', fakeWorkspaceRegistry(fixture.workspaces))
+  ctx.provide('sessions', fakeSessionStore(fixture))
   await ctx.plugin(TenantSessionGuard)
   return { ctx, api }
 }
@@ -474,6 +499,159 @@ describe('host.createDirectory', () => {
     const { api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
     const response = await api.host.createDirectory(request({ path: '/home/node', name: 'x' }))
     expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-required' } })
+  })
+})
+
+describe('event stream scoping (events.mux / events.host)', () => {
+  async function drain<F>(stream: AsyncIterable<F>): Promise<F[]> {
+    const out: F[] = []
+    for await (const item of stream) out.push(item)
+    return out
+  }
+  const wrap = (payload: unknown): RpcRequest<unknown> => ({ rpcId: RpcId('f'), payload })
+  const sessionRow = (sessionId: string, cwd: string) =>
+    ({ sessionId, updatedAt: 0, running: false, blank: false, cwd })
+
+  it('mux forwards only frames for sessions under the caller tenant root; stream/error always passes', async () => {
+    const own = sessionRow('s-own', join(tenantRootFor(TENANT_A), 'ws'))
+    const foreign = sessionRow('s-foreign', join(tenantRootFor(TENANT_B), 'ws'))
+    const { ctx, api } = await setup({
+      sessions: [own, foreign], searchItems: [], workspaces: [], archivedSessionIds: [],
+      muxFrames: [
+        wrap({ type: 'session/subscribed', sessionId: 's-own', lastSeq: 0 }),
+        wrap({ type: 'session/subscribed', sessionId: 's-foreign', lastSeq: 0 }),
+        wrap({ type: 'session/event', sessionId: 's-foreign', event: { seq: 1 } }),
+        wrap({ type: 'session/projection', sessionId: 's-own', key: 't', value: 'x', seq: 2 }),
+        wrap({ type: 'stream/error', error: { code: 'internal', message: 'x', details: {} } }),
+      ],
+    })
+    const frames = await ctx.tenantContext.run(TENANT_A, () =>
+      drain(api.events.mux(request({}), new AbortController().signal)))
+    expect(frames.map(f => (f.payload as { type: string }).type)).toEqual([
+      'session/subscribed', 'session/projection', 'stream/error',
+    ])
+    expect((frames[0]?.payload as { sessionId: string }).sessionId).toBe('s-own')
+  })
+
+  it('mux yields nothing when no tenant identity is bound (fail closed)', async () => {
+    const { api } = await setup({
+      sessions: [sessionRow('s-own', join(tenantRootFor(TENANT_A), 'ws'))],
+      searchItems: [], workspaces: [], archivedSessionIds: [],
+      muxFrames: [wrap({ type: 'session/subscribed', sessionId: 's-own', lastSeq: 0 })],
+    })
+    // Deliberately NOT inside ctx.tenantContext.run(...).
+    expect(await drain(api.events.mux(request({}), new AbortController().signal))).toEqual([])
+  })
+
+  it('host yields nothing when no tenant identity is bound (fail closed)', async () => {
+    const { api } = await setup({
+      sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [],
+      hostFrames: [wrap({ type: 'host/session-status', sessionId: 's', running: true })],
+    })
+    expect(await drain(api.events.host(request({}), new AbortController().signal))).toEqual([])
+  })
+
+  it('host drops a session-status for a session with no resolvable cwd (fail closed)', async () => {
+    const { ctx, api } = await setup({
+      sessions: [{ sessionId: 's-nocwd', updatedAt: 0, running: false, blank: false }],
+      searchItems: [], workspaces: [], archivedSessionIds: [],
+      hostFrames: [wrap({ type: 'host/session-status', sessionId: 's-nocwd', running: true })],
+    })
+    const frames = await ctx.tenantContext.run(TENANT_A, () =>
+      drain(api.events.host(request({}), new AbortController().signal)))
+    expect(frames).toEqual([])
+  })
+
+  it('host forwards session-status/agent-error only for the caller tenant\'s own sessions', async () => {
+    const own = sessionRow('s-own', join(tenantRootFor(TENANT_A), 'ws'))
+    const foreign = sessionRow('s-foreign', join(tenantRootFor(TENANT_B), 'ws'))
+    const { ctx, api } = await setup({
+      sessions: [own, foreign], searchItems: [], workspaces: [], archivedSessionIds: [],
+      hostFrames: [
+        wrap({ type: 'host/session-status', sessionId: 's-own', running: true }),
+        wrap({ type: 'host/session-status', sessionId: 's-foreign', running: true }),
+        wrap({ type: 'host/agent-error', sessionId: 's-foreign', message: 'boom' }),
+      ],
+    })
+    const frames = await ctx.tenantContext.run(TENANT_A, () =>
+      drain(api.events.host(request({}), new AbortController().signal)))
+    expect(frames.map(f => f.payload)).toEqual([{ type: 'host/session-status', sessionId: 's-own', running: true }])
+  })
+
+  it('host tracks an added session so its later removed frame still passes; drops a foreign add', async () => {
+    const { ctx, api } = await setup({
+      sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [],
+      hostFrames: [
+        wrap({ type: 'host/session-added', sessionId: 's-new', blank: true, cwd: join(tenantRootFor(TENANT_A), 'w') }),
+        wrap({ type: 'host/session-added', sessionId: 's-alien', blank: true, cwd: join(tenantRootFor(TENANT_B), 'w') }),
+        wrap({ type: 'host/session-removed', sessionId: 's-new' }),
+        wrap({ type: 'host/session-removed', sessionId: 's-alien' }),
+      ],
+    })
+    const frames = await ctx.tenantContext.run(TENANT_A, () =>
+      drain(api.events.host(request({}), new AbortController().signal)))
+    expect(frames.map(f => (f.payload as { type: string; sessionId: string }).sessionId)).toEqual(['s-new', 's-new'])
+    expect(frames.map(f => (f.payload as { type: string }).type)).toEqual(['host/session-added', 'host/session-removed'])
+  })
+
+  it('host filters workspace-order / archived-sessions lists and drops cross-tenant workspace frames', async () => {
+    const ownWs = makeWorkspace('ws-a', join(tenantRootFor(TENANT_A), 'a'), ['s-own'])
+    const foreignWs = makeWorkspace('ws-b', join(tenantRootFor(TENANT_B), 'b'), ['s-foreign'])
+    const { ctx, api } = await setup({
+      sessions: [
+        sessionRow('s-own', join(tenantRootFor(TENANT_A), 'a')),
+        sessionRow('s-foreign', join(tenantRootFor(TENANT_B), 'b')),
+      ],
+      searchItems: [], workspaces: [ownWs, foreignWs], archivedSessionIds: [],
+      hostFrames: [
+        wrap({ type: 'host/workspace-changed', workspace: foreignWs }),
+        wrap({ type: 'host/workspace-order-changed', workspaceIds: ['ws-a', 'ws-b'] }),
+        wrap({ type: 'host/archived-sessions-changed', archivedSessionIds: ['s-own', 's-foreign'] }),
+      ],
+    })
+    const frames = await ctx.tenantContext.run(TENANT_A, () =>
+      drain(api.events.host(request({}), new AbortController().signal)))
+    expect(frames.map(f => f.payload)).toEqual([
+      { type: 'host/workspace-order-changed', workspaceIds: ['ws-a'] },
+      { type: 'host/archived-sessions-changed', archivedSessionIds: ['s-own'] },
+    ])
+  })
+
+  it('host passes stream/error and a shared host/remote-event; drops a per-tenant credentials/reference-updated remote-event; forwards an own workspace-changed then its removed; drops an unknown variant', async () => {
+    const ownWs = makeWorkspace('ws-a', join(tenantRootFor(TENANT_A), 'a'), [])
+    const { ctx, api } = await setup({
+      sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [],
+      hostFrames: [
+        wrap({ type: 'stream/error', error: { code: 'internal', message: 'x', details: {} } }),
+        wrap({ type: 'host/remote-event', event: 'settings/document-updated', args: ['models'] }),
+        wrap({ type: 'host/remote-event', event: 'credentials/reference-updated', args: ['DEEPSEEK_API_KEY'] }),
+        wrap({ type: 'host/workspace-changed', workspace: ownWs }),
+        wrap({ type: 'host/workspace-removed', workspaceId: 'ws-a' }),
+        wrap({ type: 'host/workspace-removed', workspaceId: 'ws-never-seen' }),
+        wrap({ type: 'host/future-thing', sessionId: 's-x' }),
+      ],
+    })
+    const frames = await ctx.tenantContext.run(TENANT_A, () =>
+      drain(api.events.host(request({}), new AbortController().signal)))
+    expect(frames.map(f => (f.payload as { type: string }).type)).toEqual([
+      'stream/error', 'host/remote-event', 'host/workspace-changed', 'host/workspace-removed',
+    ])
+    expect(frames.map(f => f.payload).filter(p => p.type === 'host/remote-event')).toEqual([
+      { type: 'host/remote-event', event: 'settings/document-updated', args: ['models'] },
+    ])
+  })
+
+  it('restores the original events.mux/host when the plugin fiber is disposed', async () => {
+    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    // oxlint-disable-next-line typescript/unbound-method -- identity comparison only, never invoked unbound.
+    const wrappedMux = api.events.mux
+    // oxlint-disable-next-line typescript/unbound-method -- identity comparison only, never invoked unbound.
+    const wrappedHost = api.events.host
+    await ctx.fiber.dispose()
+    // oxlint-disable-next-line typescript/unbound-method -- identity comparison only, never invoked unbound.
+    expect(api.events.mux).not.toBe(wrappedMux)
+    // oxlint-disable-next-line typescript/unbound-method -- identity comparison only, never invoked unbound.
+    expect(api.events.host).not.toBe(wrappedHost)
   })
 })
 

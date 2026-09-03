@@ -27,7 +27,7 @@
 ##### 文件引用指令
 
 ```markdown
-Paths prefixed with @ are files explicitly referenced by the user. Use the read tool when their contents are needed; do not claim to have inspected a file before reading it.
+Paths prefixed with @ are files explicitly referenced by the user. A small referenced file may already appear with its contents in the runtime context; when it does not, or you need more of it, use the read tool. Never claim to have inspected a file you have not seen.
 ```
 
 #### Token 影响

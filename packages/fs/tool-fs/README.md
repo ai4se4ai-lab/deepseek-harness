@@ -26,12 +26,14 @@ All keys are optional; the defaults are the shipped read caps.
 | `readMaxLineLength` | `2000` | Characters kept per line before truncation (the suffix names the cap). |
 | `readMaxBytes` | `51200` | Byte cap on one `read` call's selected lines; overflow ends the window with a "capped" footer. |
 | `readStreamMinSize` | `10485760` | Files at or above this size (or with unknown size) stream instead of loading whole into memory. |
+| `readExtractMaxBytes` | `26214400` | Byte cap when `read` falls back to extracting a text layer from a non-UTF-8 file (a PDF); a larger file is refused with `FS_TOO_LARGE`. |
+| `readExtractMaxChars` | `400000` | Character cap on the extracted text layer; beyond it the window ends with an explicit truncation line. |
 
 ## Tools (schemas per [the filesystem tool schemas Agent Note](../../../.agents/notes/implemented/feature/2026-06-17-filesystem-tool-schemas.md))
 
 | Tool | Arguments | Behavior |
 |---|---|---|
-| `read` | `file_path`, `offset?`, `limit?` | Line-numbered UTF-8 content with a pagination footer. `offset` is 1-based; `limit` defaults to and caps at the configured `readLimit` (2000). |
+| `read` | `file_path`, `offset?`, `limit?` | Line-numbered content with a pagination footer. `offset` is 1-based; `limit` defaults to and caps at the configured `readLimit` (2000). A file the backend refuses as non-UTF-8 is retried as a document text layer when it is a PDF, so a `.pdf` reads like a `.md`; a scanned or unparsable PDF returns `FS_NOT_TEXT` with the reason. |
 | `read_image` | `file_path` | Reads a PNG/JPEG/WebP/GIF file through the bounded byte seam, persists it through `ctx.attachments.saveImage`, and returns an image block beside a small metadata envelope. Harness validates and downscales large supported images before the next model request, so the model can read the source directly without first creating a thumbnail. It succeeds only when the exact routed model declares image input. |
 | `write` | `file_path`, `content` | Create or fully replace a file. With the policy plugin: overwriting an existing file requires a prior `read` at the unchanged version; creating a new file does not. Without it: unconditional. |
 | `edit` | `file_path`, non-empty `old_string`, `new_string`, `replace_all?` | Literal replacement; unique match required unless `replace_all` is true. With the policy plugin: requires a prior `read` (any window) and the file unchanged since. Without it: unconditional. |
@@ -72,7 +74,7 @@ Every request in this plugin's registration scope receives the independently reg
 ##### Read guidance
 
 ```markdown
-Use the read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files.
+Use the read tool — not shell commands like cat — to inspect text files. Results include line numbers. Use offset and limit to continue reading large files. A PDF is read as its extracted text layer; a scanned or image-only PDF has no text to return.
 ```
 
 ##### Write guidance
@@ -114,6 +116,8 @@ Prefix-stable while the visible tool definitions and order are unchanged. Regist
 #### What the model sees
 
 A successful read is exactly `<path><displayPath></path>`, newline, `<type>file</type>`, newline, `<content>`, numbered lines as `<lineNumber>: <text>`, a blank line, one footer, and `</content>`. The footer is exactly `(Output capped. Showing lines <start>-<end>. Use offset=<next> to continue.)`, `(Showing lines <start>-<end> of <total>. Use offset=<next> to continue.)`, or `(End of file - total <total> lines)`. A long line ends exactly `... (line truncated to <max> chars)`. A missing read still returns `FS_NOT_FOUND`, but it records confirmed absence for the calling session; after an externally deleted file is re-read, a retried `write` can safely recreate it through the provider's no-replace guard.
+
+A PDF reads through the same envelope: its extracted text layer is windowed exactly like file text, and a layer longer than `readExtractMaxChars` ends with a final numbered line `[… document text truncated at <max> characters; the file continues …]`. A PDF with no recoverable text (scanned, encrypted, corrupt) is an `FS_NOT_TEXT` error whose message states which.
 
 #### Token effect
 
@@ -168,7 +172,8 @@ Append-only; newly visible content follows the reusable request prefix and does 
 ## Known Limitations and Deferred Work
 
 - **No model-facing directory listing ships** — `ctx.fs.listDir` serves provider code such as skill discovery, while the sibling [`dsh-tool-fs-search`](../tool-fs-search/) package supplies ripgrep-backed `glob` and `grep` rather than extending the filesystem seam.
-- **`read` handles UTF-8 text files only** — images use the separate extension-routed `read_image` tool; PDF, audio, and video remain deferred. A directory target is `FS_NOT_REGULAR_FILE`.
+- **`read` handles UTF-8 text and PDF text layers only** — images use the separate extension-routed `read_image` tool; audio and video remain deferred. A directory target is `FS_NOT_REGULAR_FILE`.
+- **PDF extraction is text-layer only** — via bundled `unpdf` (pdf.js). It is not OCR: a scanned or image-only PDF returns no text. Per-glyph CID-font decoding, form (XFA) data, and non-PDF office formats such as `.docx` are not extracted.
 - **Extension-declared media type** — the extension selects the declared type and the attachment store's magic-byte validation stays authoritative; a correctly formatted image under a wrong extension is refused with the rename remedy rather than sniffed.
 - **No inline image preview on the tool-result card** — UI surfaces render the image result generically (the durable reference, not pixels); inline rendering is deferred to the UI packages.
 - **No attachment-region tool** — an agent may crop an image through other available tools when it has a filesystem path. A pasted or dragged image without a path cannot be re-read at a higher resolution.

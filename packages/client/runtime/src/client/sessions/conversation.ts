@@ -451,6 +451,13 @@ export interface ConversationSnapshot {
   pending: readonly PendingInteraction[]
   /** Authoritative transient inbox snapshot, including queued and steering placements. */
   queue: readonly QueuedMessage[]
+  /**
+   * Whether the agent is working on this session: the host `session-status`
+   * frame's running bit, OR mux-observed turn activity (a streaming partial, a
+   * running tool call, or the latest `turn/start` with no `turn/end`). The mux
+   * disjunct keeps the composer's Stop control available when the host frame
+   * is delayed or lost; it clears as soon as the turn settles.
+   */
   running: boolean
   /**
    * Catalog-discovered continuation address. Its parent availability controls

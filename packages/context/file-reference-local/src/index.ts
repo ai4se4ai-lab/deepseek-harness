@@ -16,6 +16,15 @@ import type {} from '@deepseek-ai/dsh-tools'
 // Type-only: pulls the `workspace/file-added` cordis event declaration.
 import type {} from '@deepseek-ai/dsh-workspace-upload/types'
 import {
+  DEFAULT_INLINE_ENABLED,
+  DEFAULT_INLINE_MAX_BYTES_PER_FILE,
+  DEFAULT_INLINE_MAX_CHARS_PER_FILE,
+  DEFAULT_INLINE_MAX_CHARS_TOTAL,
+  DEFAULT_INLINE_MAX_FILES,
+  type InlineConfig,
+  ReferencedFileInliner,
+} from './referenced-files.ts'
+import {
   DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES,
   DEFAULT_FILE_SEARCH_MAX_ENTRIES,
   DEFAULT_FILE_SEARCH_MAX_RESULTS,
@@ -30,6 +39,8 @@ export {
   WorkspaceFileSearch,
 } from './search.ts'
 export type { FileSearchConfig } from './search.ts'
+export { collectReferencedPaths, ReferencedFileInliner } from './referenced-files.ts'
+export type { InlineConfig } from './referenced-files.ts'
 export { FILE_REFERENCE_PROMPT } from '@deepseek-ai/dsh-file-reference'
 export { activeAtToken, formatFileMention } from '@deepseek-ai/dsh-file-reference/grammar'
 
@@ -41,6 +52,16 @@ export interface Config {
   maxEntries?: number
   /** Directory basenames never traversed or offered. */
   excludedDirectories?: string[]
+  /** Fold the contents of `@`-referenced files into the runtime context so the model need not call `read`. */
+  inlineReferencedFiles?: boolean
+  /** Maximum distinct referenced paths inlined per snapshot, newest first. */
+  maxInlinedFiles?: number
+  /** Byte cap on one referenced file before it is listed by name instead of inlined. */
+  maxInlinedBytesPerFile?: number
+  /** Character cap on one file's inlined text before a truncation line. */
+  maxInlinedCharsPerFile?: number
+  /** Character ceiling over every inlined file in one snapshot. */
+  maxInlinedCharsTotal?: number
 }
 
 /** Local-filesystem owner of the file-reference discovery service. */
@@ -50,12 +71,19 @@ export class LocalFileReferenceService extends FileReferenceService {
     maxResults: z.number().step(1).min(1).default(DEFAULT_FILE_SEARCH_MAX_RESULTS),
     maxEntries: z.number().step(1).min(1).default(DEFAULT_FILE_SEARCH_MAX_ENTRIES),
     excludedDirectories: z.array(z.string()).default([...DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES]),
+    inlineReferencedFiles: z.boolean().default(DEFAULT_INLINE_ENABLED),
+    maxInlinedFiles: z.number().step(1).min(1).default(DEFAULT_INLINE_MAX_FILES),
+    maxInlinedBytesPerFile: z.number().step(1).min(1).default(DEFAULT_INLINE_MAX_BYTES_PER_FILE),
+    maxInlinedCharsPerFile: z.number().step(1).min(1).default(DEFAULT_INLINE_MAX_CHARS_PER_FILE),
+    maxInlinedCharsTotal: z.number().step(1).min(1).default(DEFAULT_INLINE_MAX_CHARS_TOTAL),
   })
 
   private readonly config: FileSearchConfig
+  private readonly inlineConfig: InlineConfig
   private readonly searches = new Map<Agent, WorkspaceFileSearch>()
   private readonly promptFibers = new Map<Agent, ReturnType<Context['inject']>>()
   private readonly promptDisposals = new Set<Promise<void>>()
+  private readonly inliners = new Map<Agent, ReferencedFileInliner>()
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx)
@@ -65,6 +93,14 @@ export class LocalFileReferenceService extends FileReferenceService {
       excludedDirectories: config.excludedDirectories ?? DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES,
     }
     validateConfig(this.config)
+    this.inlineConfig = {
+      enabled: config.inlineReferencedFiles ?? DEFAULT_INLINE_ENABLED,
+      maxFiles: config.maxInlinedFiles ?? DEFAULT_INLINE_MAX_FILES,
+      maxBytesPerFile: config.maxInlinedBytesPerFile ?? DEFAULT_INLINE_MAX_BYTES_PER_FILE,
+      maxCharsPerFile: config.maxInlinedCharsPerFile ?? DEFAULT_INLINE_MAX_CHARS_PER_FILE,
+      maxCharsTotal: config.maxInlinedCharsTotal ?? DEFAULT_INLINE_MAX_CHARS_TOTAL,
+    }
+    validateInlineConfig(this.inlineConfig)
 
     const installPrompt = (agent: Agent): void => {
       if (this.promptFibers.has(agent)) return
@@ -89,12 +125,24 @@ export class LocalFileReferenceService extends FileReferenceService {
         this.promptDisposals.delete(task)
       })
     }
-    for (const agent of ctx.agents.list()) installPrompt(agent)
-    ctx.on('agent/created', ({ agent }) => { installPrompt(agent) })
+    const installInliner = (agent: Agent): void => {
+      if (this.inliners.has(agent)) return
+      this.inliners.set(agent, new ReferencedFileInliner(agent, this.inlineConfig))
+    }
+    const disposeInliner = (agent: Agent): void => {
+      this.inliners.get(agent)?.dispose()
+      this.inliners.delete(agent)
+    }
+    for (const agent of ctx.agents.list()) {
+      installPrompt(agent)
+      installInliner(agent)
+    }
+    ctx.on('agent/created', ({ agent }) => { installPrompt(agent); installInliner(agent) })
     ctx.on('agent/disposed', ({ agent }) => {
       this.searches.get(agent)?.dispose()
       this.searches.delete(agent)
       disposePrompt(agent)
+      disposeInliner(agent)
     })
     ctx.on('session/event', (session, event) => {
       if (event.type !== 'tool/result') return
@@ -110,6 +158,8 @@ export class LocalFileReferenceService extends FileReferenceService {
     ctx.effect(() => async () => {
       for (const search of this.searches.values()) search.dispose()
       this.searches.clear()
+      for (const inliner of this.inliners.values()) inliner.dispose()
+      this.inliners.clear()
       const promptFibers = [...this.promptFibers.values()]
       this.promptFibers.clear()
       await Promise.all([
@@ -142,6 +192,21 @@ function validateConfig(config: FileSearchConfig): void {
   }
   if (config.excludedDirectories.some(name => name.length === 0 || name.includes('/') || name.includes('\\'))) {
     throw new Error('file-reference-local: excludedDirectories entries must be non-empty directory basenames')
+  }
+}
+
+/** Every inline bound counts files, bytes, or characters — a positive safe integer, or the caps misbehave. */
+function validateInlineConfig(config: InlineConfig): void {
+  const positives: ReadonlyArray<readonly [keyof Config, number]> = [
+    ['maxInlinedFiles', config.maxFiles],
+    ['maxInlinedBytesPerFile', config.maxBytesPerFile],
+    ['maxInlinedCharsPerFile', config.maxCharsPerFile],
+    ['maxInlinedCharsTotal', config.maxCharsTotal],
+  ]
+  for (const [name, value] of positives) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`file-reference-local: ${name} must be a positive safe integer`)
+    }
   }
 }
 

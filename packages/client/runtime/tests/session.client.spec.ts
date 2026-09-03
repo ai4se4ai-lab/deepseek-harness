@@ -359,6 +359,32 @@ describe('live event path', () => {
     expect(snapshots[0]?.chat.timeline.turns.get(1)?.status).toBe('open')
   })
 
+  it('reports running from an open turn even without a host session-status frame, and clears it on turn/end', async () => {
+    const { session } = await opened([])
+    expect(session.getSnapshot().running).toBe(false)
+
+    // No handleRunning() call: the host session-status frame is delayed/lost.
+    session.handleMuxEnvelope('t-start' as never, { type: 'session/event', sessionId: SID, event: ev.turnStart(0, 1) })
+    await Promise.resolve()
+    expect(session.getSnapshot().running).toBe(true)
+    expect(session.getSnapshot().composerPhase).toBe('active')
+
+    session.handleMuxEnvelope('t-user' as never, { type: 'session/event', sessionId: SID, event: ev.user(1, 'hi') })
+    session.handleMuxEnvelope('t-end' as never, { type: 'session/event', sessionId: SID, event: ev.turnEnd(2, 1) })
+    await Promise.resolve()
+    expect(session.getSnapshot().running).toBe(false)
+  })
+
+  it('keeps running true from the host frame after an open turn settles', async () => {
+    const { session } = await opened([])
+    session.handleRunning(true)
+    session.handleMuxEnvelope('h-start' as never, { type: 'session/event', sessionId: SID, event: ev.turnStart(0, 1) })
+    session.handleMuxEnvelope('h-end' as never, { type: 'session/event', sessionId: SID, event: ev.turnEnd(1, 1) })
+    await Promise.resolve()
+    // mux turn is done, but the authoritative host bit still says running.
+    expect(session.getSnapshot().running).toBe(true)
+  })
+
   it('repairs a seq gap by repulling the tail page instead of appending a hole', async () => {
     const { api, session } = await opened(plainTurn(0, 0, 'a', 'b')) // tail seq = 5
     const repaired = [...plainTurn(0, 0, 'a', 'b'), ...plainTurn(6, 1, 'c', 'd')]

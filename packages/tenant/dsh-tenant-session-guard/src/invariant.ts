@@ -16,10 +16,11 @@ export const inject = ['invariants']
 /**
  * No runtime invariant: this package's whole effect is a one-time method
  * reassignment on `ctx.apiProxy.sessions`/`ctx.apiProxy.workspace`/
- * `ctx.apiProxy.host` at plugin activation, restored verbatim by its own
- * `ctx.effect` disposer — there is no
- * durable event stream and no mutable registry here to observe for
- * corruption between two independent reads (per the package-invariant policy:
+ * `ctx.apiProxy.host`/`ctx.apiProxy.events` at plugin activation, restored
+ * verbatim by its own `ctx.effect` disposer — the per-connection id sets the
+ * `events.{mux,host}` wrappers keep are stream-local, not a shared registry,
+ * so there is no durable event stream and no mutable registry here to observe
+ * for corruption between two independent reads (per the package-invariant policy:
  * confirming that a wrapped method is present, or that disposal restored the
  * original, is a plugin-shape/effect-disposal fact, not a runtime data
  * relation). That disposal-restores-the-original contract is proven directly

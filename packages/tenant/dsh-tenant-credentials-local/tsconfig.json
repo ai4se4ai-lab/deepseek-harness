@@ -9,34 +9,34 @@
   ],
   "references": [
     {
+      "path": "../../../vendor/cosmokit"
+    },
+    {
       "path": "../../../vendor/cordis"
     },
     {
       "path": "../../../vendor/schemastery"
     },
     {
-      "path": "../../core/agent"
+      "path": "../../credentials/credentials"
     },
     {
-      "path": "../../core/system-prompt"
+      "path": "../../credentials/credentials-local"
     },
     {
-      "path": "../../core/tools"
+      "path": "../../util/atomic-write"
     },
     {
-      "path": "../../fs/fs"
+      "path": "../../util/home-paths"
     },
     {
-      "path": "../../fs/tool-fs"
+      "path": "../../util/launch-environment"
     },
     {
       "path": "../../runtime-diagnostics/invariants"
     },
     {
-      "path": "../file-reference"
-    },
-    {
-      "path": "../workspace-upload"
+      "path": "../dsh-tenant-context"
     }
   ]
 }

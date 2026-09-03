@@ -1,16 +1,29 @@
 /**
- * Tenant-scoping wrapper over `ctx.apiProxy`'s session, workspace, and
- * directory-browse RPC methods, for the single shared DSH container: every
- * caller carries a `ctx.tenantContext`-bound tenant id (see
+ * Tenant-scoping wrapper over `ctx.apiProxy`'s session, workspace,
+ * directory-browse, and event-stream methods, for the single shared DSH
+ * container: every caller carries a `ctx.tenantContext`-bound tenant id (see
  * `@mindportalix/dsh-tenant-context`), and this plugin clamps
  * `session.create`'s `cwd`/`workspaceId`, filters `session.list`/`session.search`
- * results, clamps or filters every `workspace.*` method, and clamps
+ * results, clamps or filters every `workspace.*` method, clamps
  * `host.listDirectory`/`host.createDirectory` — the "Add workspace" folder
  * browser's backend, otherwise unaware of tenant scoping and rooted at the
  * container OS user's home directory — to that caller's
- * `$DSH_HOME/tenants/<tenantId>` root, so two tenants sharing this process can
- * never read, enumerate, browse, or mutate each other's sessions, workspaces,
- * or filesystem through the API gateway.
+ * `$DSH_HOME/tenants/<tenantId>` root, and filters the `events.mux` /
+ * `events.host` downlink frames so a connection only ever sees its own
+ * tenant's session, workspace, and agent events — including dropping the
+ * `credentials/reference-updated` `host/remote-event`, now that
+ * `@mindportalix/dsh-tenant-credentials-local` makes every credential document
+ * per-tenant. Two tenants sharing this process can never read, enumerate,
+ * browse, mutate, or receive live pushes for each other's sessions,
+ * workspaces, credentials, or filesystem through the API gateway.
+ *
+ * The event-stream guards read the connection's bound tenant with
+ * `ctx.tenantContext.current()` at the moment the wrapped `events.*` opener is
+ * called — `@deepseek-ai/dsh-client-connection`'s WebSocket carrier opens both
+ * downlinks inside `ctx.tenantContext.run(tenantId, …)`, so the id is bound
+ * there and stays bound across every resumption of the frame generator. A
+ * stream opened with no tenant bound yields nothing (fail closed), matching
+ * the RPC guards' `tenant-required` posture.
  *
  * Every wrapped method calls `ctx.tenantContext.requireCurrent()` before doing
  * anything else and turns its `TenantRequiredError` into a structured
@@ -32,11 +45,15 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type {
-  ApiProxy, DirectoryListing, RpcId, RpcResponse, SessionSearchItem, SessionSummary, WorkspaceView,
+  ApiProxy, DirectoryListing, HostFrame, MuxFrame, RpcId, RpcRequest, RpcResponse,
+  SessionSearchItem, SessionSummary, WorkspaceView,
 } from '@deepseek-ai/dsh-host-apiproxy/api'
 // Type-only: resolves ctx.apiProxy (the Context merge lives at the package root, not ./api).
 import type {} from '@deepseek-ai/dsh-host-apiproxy'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+// Type-only: pulls in the `ctx.sessions` Context merge (the event-stream guards
+// resolve a session id to its recorded cwd through it).
+import type {} from '@deepseek-ai/dsh-session'
 import { WorkspaceId as brandWorkspaceId } from '@deepseek-ai/dsh-workspace'
 import type {} from '@deepseek-ai/dsh-workspace'
 import type {} from '@mindportalix/dsh-tenant-context'
@@ -44,7 +61,7 @@ import type {} from '@mindportalix/dsh-tenant-context'
 /** Stable Cordis plugin name. */
 export const name = 'tenant-session-guard'
 /** Every service this plugin wraps or reads tenant identity from. */
-export const inject = ['apiProxy', 'tenantContext', 'workspaceRegistry']
+export const inject = ['apiProxy', 'tenantContext', 'workspaceRegistry', 'sessions']
 
 /** This plugin has no configuration: the tenant root base is `$DSH_HOME`, already env-configured. */
 export type Config = Readonly<Record<string, never>>
@@ -147,6 +164,8 @@ interface OriginalMethods {
   workspaceArchiveSession: ApiProxy['workspace']['archiveSession']
   hostListDirectory: ApiProxy['host']['listDirectory']
   hostCreateDirectory: ApiProxy['host']['createDirectory']
+  eventsMux: ApiProxy['events']['mux']
+  eventsHost: ApiProxy['events']['host']
 }
 
 /**
@@ -175,6 +194,7 @@ export function apply(ctx: Context): void {
   const sessions = ctx.apiProxy.sessions
   const workspace = ctx.apiProxy.workspace
   const host = ctx.apiProxy.host
+  const events = ctx.apiProxy.events
 
   const original: OriginalMethods = {
     sessionsCreate: sessions.create.bind(sessions),
@@ -198,6 +218,8 @@ export function apply(ctx: Context): void {
     workspaceArchiveSession: workspace.archiveSession.bind(workspace),
     hostListDirectory: host.listDirectory.bind(host),
     hostCreateDirectory: host.createDirectory.bind(host),
+    eventsMux: events.mux.bind(events),
+    eventsHost: events.host.bind(events),
   }
 
   sessions.create = async (request) => {
@@ -435,6 +457,154 @@ export function apply(ctx: Context): void {
     return original.hostCreateDirectory(request)
   }
 
+  // ── Event-stream frame scoping ──────────────────────────────────────────
+  //
+  // `events.mux` / `events.host` subscribe to process-global session, agent,
+  // and workspace signals, so without this filter every tenant's downlink
+  // carries every other tenant's frames. Each wrapped opener runs
+  // synchronously inside the carrier's `ctx.tenantContext.run(tenantId, …)`
+  // (see websocket-downlink.ts), so `current()` here is this connection's
+  // tenant; it stays bound across every `for await` resumption of the
+  // returned generator.
+
+  /** cwd recorded for an attached session, or `undefined` (cold, disposed, or a pre-project log). */
+  function attachedSessionCwd(sessionId: SessionId): string | undefined {
+    return ctx.sessions.get(sessionId)?.header.cwd
+  }
+
+  /** The session ids and workspace ids the given tenant root currently owns, via its workspaces. */
+  function seedOwned(tenantRoot: string): { sessionIds: Set<SessionId>; workspaceIds: Set<string> } {
+    const owned = ctx.workspaceRegistry.list().filter(candidate => isUnderRoot(tenantRoot, candidate.path))
+    return {
+      sessionIds: new Set(owned.flatMap(candidate => candidate.sessionIds)),
+      workspaceIds: new Set(owned.map(candidate => String(candidate.id))),
+    }
+  }
+
+  /**
+   * Whether a session is visible to `tenantRoot`: already tracked as owned by
+   * this stream, or an attached session whose recorded cwd is under the root.
+   * A session with no resolvable cwd is invisible (fail closed).
+   */
+  function sessionVisible(tenantRoot: string, owned: Set<SessionId>, sessionId: SessionId): boolean {
+    if (owned.has(sessionId)) return true
+    const cwd = attachedSessionCwd(sessionId)
+    return cwd !== undefined && isUnderRoot(tenantRoot, cwd)
+  }
+
+  /** Drop every mux frame whose session is not visible to the connection's tenant. */
+  async function* scopedMuxStream(
+    inner: AsyncIterable<RpcRequest<MuxFrame>>,
+    tenantId: string | undefined,
+  ): AsyncIterable<RpcRequest<MuxFrame>> {
+    if (tenantId === undefined) return
+    const tenantRoot = ensureTenantRoot(tenantId)
+    const { sessionIds: owned } = seedOwned(tenantRoot)
+    for await (const frame of inner) {
+      if (frame.payload.type === 'stream/error') {
+        yield frame
+        continue
+      }
+      if (sessionVisible(tenantRoot, owned, frame.payload.sessionId)) {
+        owned.add(frame.payload.sessionId)
+        yield frame
+      }
+    }
+  }
+
+  /**
+   * Rewrite or drop one host frame for `tenantRoot`. Returns the frame to
+   * forward (unchanged, or with a filtered id list) or `undefined` to drop it.
+   * `ownedSessions` / `ownedWorkspaces` accumulate this connection's ids so
+   * id-only removal frames for the tenant's own entries still pass after the
+   * underlying session or workspace is gone.
+   */
+  function scopedHostFrame(
+    frame: RpcRequest<HostFrame>,
+    tenantRoot: string,
+    ownedSessions: Set<SessionId>,
+    ownedWorkspaces: Set<string>,
+  ): RpcRequest<HostFrame> | undefined {
+    const payload = frame.payload
+    switch (payload.type) {
+      case 'stream/error':
+        return frame
+      // `host/remote-event` otherwise forwards process-global config changes
+      // (settings/models/agent-preset/commands), which are one shared set in
+      // this container — not per-tenant data. The exception is
+      // `credentials/reference-updated`: `@mindportalix/dsh-tenant-credentials-local`
+      // makes every credential document per-tenant, so one tenant's key write
+      // must not wake another tenant's Models page. Dropped here rather than
+      // scoped because the frame carries only the ref NAME and no originating
+      // tenant to compare against; a tenant's own second browser tab picks up
+      // its key change on reload (key writes are rare).
+      case 'host/remote-event':
+        return payload.event === 'credentials/reference-updated' ? undefined : frame
+      case 'host/session-added': {
+        const cwd = payload.cwd ?? attachedSessionCwd(payload.sessionId)
+        if (cwd === undefined || !isUnderRoot(tenantRoot, cwd)) return undefined
+        ownedSessions.add(payload.sessionId)
+        return frame
+      }
+      case 'host/session-status':
+      case 'host/agent-error':
+        return sessionVisible(tenantRoot, ownedSessions, payload.sessionId) ? frame : undefined
+      case 'host/session-removed':
+        if (!ownedSessions.has(payload.sessionId)) return undefined
+        ownedSessions.delete(payload.sessionId)
+        return frame
+      case 'host/workspace-changed': {
+        if (!isUnderRoot(tenantRoot, payload.workspace.path)) return undefined
+        ownedWorkspaces.add(String(payload.workspace.workspaceId))
+        for (const sessionId of payload.workspace.sessionIds) ownedSessions.add(sessionId)
+        return frame
+      }
+      case 'host/workspace-removed':
+        if (!ownedWorkspaces.has(String(payload.workspaceId))) return undefined
+        ownedWorkspaces.delete(String(payload.workspaceId))
+        return frame
+      case 'host/workspace-order-changed': {
+        const workspaceIds = payload.workspaceIds.filter(id => ownedWorkspaces.has(String(id)))
+        if (workspaceIds.length === 0) return undefined
+        if (workspaceIds.length === payload.workspaceIds.length) return frame
+        return { ...frame, payload: { ...payload, workspaceIds } }
+      }
+      case 'host/archived-sessions-changed': {
+        // A full-snapshot frame: forward it even when the filtered set is
+        // empty (that is the "no archived sessions for you" transition).
+        const archivedSessionIds = payload.archivedSessionIds.filter(id => ownedSessions.has(id))
+        if (archivedSessionIds.length === payload.archivedSessionIds.length) return frame
+        return { ...frame, payload: { ...payload, archivedSessionIds } }
+      }
+      default:
+        // `HostFrame` is merge-extensible: an unrecognised variant may carry a
+        // session or workspace reference this guard cannot classify, so drop
+        // it (fail closed) rather than forward it cross-tenant. Add a case
+        // above when a new variant is introduced.
+        return undefined
+    }
+  }
+
+  /** Filter/rewrite host frames for the connection's tenant (see {@link scopedHostFrame}). */
+  async function* scopedHostStream(
+    inner: AsyncIterable<RpcRequest<HostFrame>>,
+    tenantId: string | undefined,
+  ): AsyncIterable<RpcRequest<HostFrame>> {
+    if (tenantId === undefined) return
+    const tenantRoot = ensureTenantRoot(tenantId)
+    const { sessionIds: ownedSessions, workspaceIds: ownedWorkspaces } = seedOwned(tenantRoot)
+    for await (const frame of inner) {
+      const scoped = scopedHostFrame(frame, tenantRoot, ownedSessions, ownedWorkspaces)
+      if (scoped !== undefined) yield scoped
+    }
+  }
+
+  events.mux = (request, signal) =>
+    scopedMuxStream(original.eventsMux(request, signal), ctx.tenantContext.current())
+
+  events.host = (request, signal) =>
+    scopedHostStream(original.eventsHost(request, signal), ctx.tenantContext.current())
+
   ctx.effect(() => () => {
     sessions.create = original.sessionsCreate
     sessions.list = original.sessionsList
@@ -457,6 +627,8 @@ export function apply(ctx: Context): void {
     workspace.archiveSession = original.workspaceArchiveSession
     host.listDirectory = original.hostListDirectory
     host.createDirectory = original.hostCreateDirectory
+    events.mux = original.eventsMux
+    events.host = original.eventsHost
   }, 'tenant-session-guard: restore unwrapped apiProxy methods')
 }
 

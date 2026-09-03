@@ -8,12 +8,15 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-user-approval'
-import { applyReadTool, READ_LIMIT, STREAM_MIN_SIZE } from './read.ts'
+import { applyReadTool, EXTRACT_MAX_BYTES, EXTRACT_MAX_CHARS, READ_LIMIT, STREAM_MIN_SIZE } from './read.ts'
 import { applyWriteTool } from './write.ts'
 import { applyEditTool } from './edit.ts'
 import { applyReadImageTool } from './read-image.ts'
 import { READ_MAX_BYTES, READ_MAX_LINE_LENGTH } from './read-render.ts'
 import { FsSandboxController } from './sandbox.ts'
+
+export { extractDocumentText, looksLikePdf } from './extract-document.ts'
+export type { ExtractedDocument } from './extract-document.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'tool-fs'
@@ -31,6 +34,10 @@ export interface Config {
   readMaxBytes?: number
   /** Files at or above this size stream instead of loading whole into memory. */
   readStreamMinSize?: number
+  /** Byte cap on a non-UTF-8 file (e.g. a PDF) whose text layer `read` extracts instead. */
+  readExtractMaxBytes?: number
+  /** Character cap on the extracted text layer before `read` appends a truncation line. */
+  readExtractMaxChars?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -38,6 +45,8 @@ export const Config: z<Config> = z.object({
   readMaxLineLength: z.number().default(READ_MAX_LINE_LENGTH),
   readMaxBytes: z.number().default(READ_MAX_BYTES),
   readStreamMinSize: z.number().default(STREAM_MIN_SIZE),
+  readExtractMaxBytes: z.number().default(EXTRACT_MAX_BYTES),
+  readExtractMaxChars: z.number().default(EXTRACT_MAX_CHARS),
 })
 
 /** The shape after schemastery applied the defaults. */
@@ -58,11 +67,15 @@ export function apply(ctx: Context, config: Config): void {
   assertPositiveInteger('readMaxLineLength', resolved.readMaxLineLength)
   assertPositiveInteger('readMaxBytes', resolved.readMaxBytes)
   assertPositiveInteger('readStreamMinSize', resolved.readStreamMinSize)
+  assertPositiveInteger('readExtractMaxBytes', resolved.readExtractMaxBytes)
+  assertPositiveInteger('readExtractMaxChars', resolved.readExtractMaxChars)
   applyReadTool(ctx, {
     limit: resolved.readLimit,
     maxLineLength: resolved.readMaxLineLength,
     maxBytes: resolved.readMaxBytes,
     streamMinSize: resolved.readStreamMinSize,
+    extractMaxBytes: resolved.readExtractMaxBytes,
+    extractMaxChars: resolved.readExtractMaxChars,
   })
   // read_image is composition-conditional: without a mounted attachment store
   // the deployment cannot durably commit image bytes, so the tool never

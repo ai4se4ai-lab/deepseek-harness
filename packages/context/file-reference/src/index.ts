@@ -15,7 +15,7 @@ export type { ActiveAtToken } from './grammar.ts'
 export type { FileReferenceCandidate } from './types.ts'
 
 /** Model guidance for path-only references selected by a user interface. */
-export const FILE_REFERENCE_PROMPT = 'Paths prefixed with @ are files explicitly referenced by the user. Use the read tool when their contents are needed; do not claim to have inspected a file before reading it.'
+export const FILE_REFERENCE_PROMPT = 'Paths prefixed with @ are files explicitly referenced by the user. A small referenced file may already appear with its contents in the runtime context; when it does not, or you need more of it, use the read tool. Never claim to have inspected a file you have not seen.'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {

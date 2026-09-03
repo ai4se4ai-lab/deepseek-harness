@@ -15,8 +15,10 @@ export const name = 'file-reference-local-invariant'
 export const inject = ['invariants']
 
 /**
- * No runtime invariant: per-agent indexes are private advisory caches whose
- * invalidation and disposal are observed directly through service tests.
+ * No runtime invariant: the per-agent fuzzy indexes and the per-agent
+ * referenced-file extraction cache are private advisory state whose
+ * version-guarded refresh and agent-scoped disposal are observed directly
+ * through service tests, not through an owned session-event relation.
  */
 const install: InvariantInstaller = () => {}
 

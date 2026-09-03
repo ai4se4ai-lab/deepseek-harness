@@ -738,6 +738,25 @@ export class Session implements SessionFace {
     }
     const chat = (this.conversation.snapshot('chat') as ChatSnapshot | undefined) ?? EMPTY_CHAT_SNAPSHOT
     const legacy = chat.legacy
+    // The composer's Send/Stop toggle keys off `running`, which normally
+    // follows the host `session-status` frame (handleRunning). Derive it from
+    // the mux stream too: a streaming assistant message, a tool call still
+    // running, or a latest turn window opened by `turn/start` with no matching
+    // `turn/end` all mean the agent is working. This keeps the Stop control
+    // available whenever a turn is in flight even when the host frame is
+    // delayed or never arrives — e.g. an embedding that only forwards the mux
+    // downlink. It clears the moment the turn ends (partial cleared, tool
+    // calls settled, `turn/end` recorded), so the toggle never sticks.
+    const latestTurn = legacy.turnTimings.size === 0
+      ? undefined
+      : Math.max(...legacy.turnTimings.keys())
+    const latestTurnRunning = latestTurn !== undefined
+      && legacy.turnTimings.get(latestTurn)?.endTime === undefined
+      && !legacy.turnEnds.has(latestTurn)
+    const running = this.running
+      || legacy.partial !== null
+      || legacy.runningCalls.length > 0
+      || latestTurnRunning
     return {
       sessionId: this.sessionId,
       views: this.conversation,
@@ -749,14 +768,14 @@ export class Session implements SessionFace {
       runningCalls: legacy.runningCalls,
       pending: this.pendingCache.value,
       queue: this.queueMirror.snapshot(),
-      running: this.running,
+      running,
       subagent: this.address === undefined
         ? null
         : { address: this.address, parentAvailable: this.parentAvailable },
       composerPhase: derivePhase(
         hasVisibleConversationContent(chat)
           || (!this.blankBit && !this.firstPromptPendingTurn)
-          || this.running
+          || running
           || this.pendingCache.value.length > 0,
         this.promptAttempted,
       ),
