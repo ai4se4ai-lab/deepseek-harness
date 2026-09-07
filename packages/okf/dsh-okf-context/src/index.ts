@@ -35,19 +35,32 @@ export interface Config {
   maxBytes: number
   /** Minimum ms between durable injections in one session (0 = every eligible step). */
   refreshIntervalMs: number
+  /**
+   * List at most this many concepts inline in the per-turn snapshot. A bundle
+   * larger than this gets a one-line pointer to `okf_retrieve_context` /
+   * `okf_search_concepts` instead of the full catalogue, so a big bundle stops
+   * spending the whole context window on a listing (`okf-retrieval.md` §8).
+   * `0` disables the cap (always list every concept).
+   */
+  snapshotMaxConcepts: number
 }
 
 /** Schemastery validation for {@link Config}. */
 export const Config: z<Config> = z.object({
   maxBytes: z.number().default(32768),
   refreshIntervalMs: z.number().default(0),
+  snapshotMaxConcepts: z.number().default(40),
 })
 
 /** The prompt order for both the guidance section and the catalogue snapshot. */
 const OKF_ORDER = 150
 
 function validate(config: Config): void {
-  for (const [key, value] of [['maxBytes', config.maxBytes], ['refreshIntervalMs', config.refreshIntervalMs]] as const) {
+  for (const [key, value] of [
+    ['maxBytes', config.maxBytes],
+    ['refreshIntervalMs', config.refreshIntervalMs],
+    ['snapshotMaxConcepts', config.snapshotMaxConcepts],
+  ] as const) {
     if (!Number.isSafeInteger(value) || value < 0) {
       throw new TypeError(`okf-context: ${key} must be a non-negative safe integer, got ${String(value)}`)
     }
@@ -94,7 +107,7 @@ export function apply(ctx: Context, config: Config): void {
 
     let text: string
     try {
-      text = bundleSnapshot(await ctx.okf.list(), config.maxBytes)
+      text = bundleSnapshot(await ctx.okf.list(), config.maxBytes, config.snapshotMaxConcepts)
     } catch {
       /* v8 ignore next -- ctx.okf.list() is resilient by contract; a throw here means a broken filesystem. */
       return decision

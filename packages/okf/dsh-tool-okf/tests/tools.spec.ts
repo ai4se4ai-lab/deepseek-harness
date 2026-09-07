@@ -6,7 +6,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdir } from 'node:fs/promises'
 import { Context } from '@deepseek-ai/cordis'
 import { CallId } from '@deepseek-ai/dsh-llm'
@@ -26,7 +26,10 @@ async function setup(): Promise<void> {
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(OkfBundle, { root })
-  await ctx.plugin(toolOkf, { producer: 'dsh', version: 'test' })
+  await ctx.plugin(toolOkf, {
+    producer: 'dsh', version: 'test',
+    retrieveUrl: '', retrieveAuthHeader: '', retrieveBudget: 8000, retrieveTimeoutMs: 15000,
+  })
 }
 
 function run(name: string, args: unknown) {
@@ -244,5 +247,99 @@ describe('okf_verify_concept', () => {
   it('maps a missing concept to not-found', async () => {
     const res = await run('okf_verify_concept', { id: 'nope' })
     expect(res.isError).toBe(true)
+  })
+})
+
+describe('okf_retrieve_context', () => {
+  const RETRIEVE_URL = 'http://app.test/api/okf/retrieve'
+  let rctx: Context
+  let rcall = 0
+  const rrun = (name: string, args: unknown) =>
+    rctx.tools.execute({ signal, callId: CallId(`r-${++rcall}`), name, arguments: args })
+
+  async function mountRetrieve(over: Partial<toolOkf.Config> = {}): Promise<void> {
+    rctx = new Context()
+    await rctx.plugin(SystemPrompt)
+    await rctx.plugin(ToolRuntime)
+    await rctx.plugin(OkfBundle, { root })
+    await rctx.plugin(toolOkf, {
+      producer: 'dsh', version: 'test',
+      retrieveUrl: RETRIEVE_URL, retrieveAuthHeader: '', retrieveBudget: 8000, retrieveTimeoutMs: 15000,
+      ...over,
+    })
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('is absent unless retrieveUrl is configured', async () => {
+    // default setup() mounts without retrieveUrl
+    expect(ctx.tools.schemas().map(s => s.name)).not.toContain('okf_retrieve_context')
+    await mountRetrieve()
+    expect(rctx.tools.schemas().map(s => s.name)).toContain('okf_retrieve_context')
+  })
+
+  it('POSTs the query + budget and renders the returned context block', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body))
+      expect(body.query).toBe('who supervised Babaei?')
+      expect(body.budget).toBe(1234)
+      expect(body.conceptId).toBe('researchers/majid-babaei')
+      return new Response(JSON.stringify({
+        context: '> Trust of these 1 sources: 1 human-reviewed.\n\n### Jürgen Dingel\n_trust: human-reviewed_\n\nbio',
+        blocks: [{ concept_id: 'people/juergen-dingel', trust_state: 'human-reviewed', why_included: '1-hop via \'supervised_by\' edge from seed researchers/majid-babaei' }],
+        usable: ['researchers/majid-babaei'],
+        rejected: [],
+        trustChain: { total: 1, humanReviewed: 1 },
+        degraded: { vectorSeeds: false, semanticScoring: false },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await mountRetrieve()
+    const res = await rrun('okf_retrieve_context', {
+      query: 'who supervised Babaei?', concept_id: 'researchers/majid-babaei', budget: 1234,
+    })
+    expect(res.isError).toBeFalsy()
+    expect(fetchMock).toHaveBeenCalledWith(RETRIEVE_URL, expect.objectContaining({ method: 'POST' }))
+    expect(text(res)).toMatch(/Jürgen Dingel/)
+    expect(text(res)).toMatch(/^> Trust of these 1 sources/)
+  })
+
+  it('falls back to the configured default budget and sends the auth header', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      expect((init.headers as Record<string, string>).authorization).toBe('Bearer svc-token')
+      expect(JSON.parse(String(init.body)).budget).toBe(4096)
+      return new Response(JSON.stringify({ context: '', blocks: [] }), { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await mountRetrieve({ retrieveBudget: 4096, retrieveAuthHeader: 'Bearer svc-token' })
+    const res = await rrun('okf_retrieve_context', { query: 'anything' })
+    expect(res.isError).toBeFalsy()
+    expect(text(res)).toMatch(/No chain-usable OKF concepts matched/)
+  })
+
+  it('maps a non-2xx response to OKF_TOOL_FAILED', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 503 })))
+    await mountRetrieve()
+    const res = await rrun('okf_retrieve_context', { query: 'q' })
+    expect(res.isError).toBe(true)
+    expect(text(res)).toMatch(/HTTP 503/)
+  })
+
+  it('maps a network failure to OKF_TOOL_FAILED', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED') }))
+    await mountRetrieve()
+    const res = await rrun('okf_retrieve_context', { query: 'q' })
+    expect(res.isError).toBe(true)
+    expect(text(res)).toMatch(/could not reach the retrieval endpoint: ECONNREFUSED/)
+  })
+
+  it('maps a non-JSON body to OKF_TOOL_FAILED', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>not json</html>', { status: 200 })))
+    await mountRetrieve()
+    const res = await rrun('okf_retrieve_context', { query: 'q' })
+    expect(res.isError).toBe(true)
+    expect(text(res)).toMatch(/non-JSON body/)
   })
 })

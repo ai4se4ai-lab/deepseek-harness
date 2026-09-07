@@ -41,17 +41,30 @@ export function conceptLine(c: ConceptSummary): string {
  * absent or empty (nothing to inject). Truncated to `maxBytes` on a line
  * boundary with a marker.
  *
+ * When the bundle holds more than `maxConcepts` concepts (and `maxConcepts > 0`),
+ * the per-concept list is replaced by a one-line pointer to `okf_retrieve_context`
+ * / `okf_search_concepts`, so a large bundle stops spending the whole context
+ * window on a catalogue the model can query on demand
+ * (`docs/architecture/okf-retrieval.md` §8).
+ *
  * @param listing - `ctx.okf.list()` output.
  * @param maxBytes - byte cap for the snapshot text.
+ * @param maxConcepts - list at most this many concepts inline; `0` = no limit.
  * @returns the snapshot, or `''`.
  */
 export function bundleSnapshot(
   listing: { exists: boolean; concepts: readonly ConceptSummary[] },
   maxBytes: number,
+  maxConcepts = 0,
 ): string {
   if (!listing.exists) return ''
   const concepts = listing.concepts.filter(c => !c.isDirectory && c.name !== 'index.md' && c.name !== 'log.md')
   if (concepts.length === 0) return ''
+  if (maxConcepts > 0 && concepts.length > maxConcepts) {
+    return `OKF knowledge bundle — ${concepts.length} concept(s). Too many to list here; `
+      + 'call okf_retrieve_context with the question you are answering to pull the most relevant, '
+      + 'chain-verified concepts, or okf_search_concepts to filter by type / tag / text.'
+  }
   const header = `OKF knowledge bundle — ${concepts.length} concept(s). Consult it before answering; keep it current.`
   const lines = [header, ...concepts.map(conceptLine)]
   let text = lines.join('\n')
