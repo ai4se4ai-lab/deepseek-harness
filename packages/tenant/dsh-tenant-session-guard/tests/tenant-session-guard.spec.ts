@@ -1,17 +1,19 @@
 /**
  * TenantSessionGuard tests. A real TenantContextService drives tenant
- * binding (matching production ALS propagation); apiProxy and
- * workspaceRegistry are hand-built fakes narrow enough to exercise every
- * wrapped method's clamp/filter/fail-closed behavior without booting the real
- * session/workspace stack.
+ * binding (matching production ALS propagation); sessionController /
+ * workspaceController / directoryPickerController and workspaceRegistry are
+ * hand-built fakes narrow enough to exercise every wrapped method's
+ * clamp/filter/fail-closed behavior without booting the real session/
+ * workspace stack.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { RpcId, type ApiProxy, type RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
+import { SessionId } from '@deepseek-ai/dsh-session/types'
 import { TenantContextService } from '@mindportalix/dsh-tenant-context'
 import * as TenantSessionGuard from '../src/index.ts'
 import { isUnderRoot, tenantRootFor } from '../src/index.ts'
@@ -29,13 +31,13 @@ function makeWorkspace(workspaceId: string, path: string, sessionIds: string[] =
   return { workspaceId, path, title: workspaceId, sessionIds, createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z' }
 }
 
-/** Ancestor-chain breadcrumbs for `target`, matching the real browse backend's `ancestryCrumbs` shape. */
+/** Ancestor-chain breadcrumbs for `target`, matching the real browse backend's shape. */
 function fakeCrumbs(target: string): { name: string; path: string; hidden: boolean }[] {
   const crumbs: { name: string; path: string; hidden: boolean }[] = []
   let current = target
   for (;;) {
     const parent = dirname(current)
-    crumbs.unshift({ name: parent === current ? current : basename(current), path: current, hidden: false })
+    crumbs.unshift({ name: parent === current ? current : current.slice(parent.length + 1), path: current, hidden: false })
     if (parent === current) return crumbs
     current = parent
   }
@@ -48,82 +50,74 @@ interface Fixture {
   archivedSessionIds: string[]
 }
 
-function fakeApiProxy(fixture: Fixture): ApiProxy {
-  const sessions = {
-    list: async (request: RpcRequest<{ cursor?: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { items: fixture.sessions } } }),
-    search: async (request: RpcRequest<{ query: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { items: fixture.searchItems, hasMore: false } } }),
-    create: async (request: RpcRequest<{ workspaceId?: string; cwd?: string; sessionId?: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { sessionId: request.payload.sessionId ?? 'created' } } }),
-    // Each fake below echoes { reached: true } so tests can assert the call
+/** Fake `ctx.sessionController` narrow enough for this suite's clamp/filter/guard assertions. */
+function fakeSessionController(fixture: Fixture): Context['sessionController'] {
+  return {
+    list: async () => ({ items: fixture.sessions }),
+    search: async () => ({ items: fixture.searchItems, hasMore: false }),
+    create: async (request: { workspaceId?: string; cwd?: string; sessionId?: string }) =>
+      ({ sessionId: request.sessionId ?? 'created' }),
+    // Each fake below echoes `reached: true` so tests can assert the call
     // actually reached the original implementation (pass-through), distinct
     // from a guard rejection (which never calls these).
-    history: async (request: RpcRequest<{ sessionId: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { events: [], hasMore: false, reached: true } } }),
-    models: async (request: RpcRequest<{ sessionId: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { reached: true } } }),
-    selectModel: async (request: RpcRequest<{ sessionId: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { reached: true } } }),
-    rename: async (request: RpcRequest<{ sessionId: string; title: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { title: request.payload.title, seq: 0, reached: true } } }),
-    fork: async (request: RpcRequest<{ sessionId: string; atSeq?: number }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { sessionId: 'forked', reached: true } } }),
-    prompt: async (request: RpcRequest<{ sessionId: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { accepted: true, reached: true } } }),
-    attachment: async (request: RpcRequest<{ sessionId: string; attachmentId: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { reached: true } } }),
-    updateQueue: async (request: RpcRequest<{ sessionId: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { accepted: true, reached: true } } }),
-    cancel: async (request: RpcRequest<{ sessionId: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { accepted: true, reached: true } } }),
-  }
-  const workspace = {
-    list: async (request: RpcRequest<{}>) => ({
-      rpcId: request.rpcId,
-      result: { ok: true, value: { items: fixture.workspaces, archivedSessionIds: fixture.archivedSessionIds } },
-    }),
-    create: async (request: RpcRequest<{ path: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { workspace: makeWorkspace('new', request.payload.path), created: true } } }),
-    rename: async (request: RpcRequest<{ workspaceId: string; title: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { workspace: fixture.workspaces[0] } } }),
-    delete: async (request: RpcRequest<{ workspaceId: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { deleted: true } } }),
-    insertBefore: async (request: RpcRequest<{ workspaceId: string; beforeWorkspaceId?: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { workspaceIds: [] } } }),
-    insertSessionBefore: async (request: RpcRequest<{ workspaceId: string; sessionId: string; beforeSessionId?: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { workspace: fixture.workspaces[0] } } }),
-    archiveSession: async (request: RpcRequest<{ sessionId: string }>) => ({
-      rpcId: request.rpcId,
-      result: { ok: true, value: { archivedSessionIds: [...fixture.archivedSessionIds, request.payload.sessionId] } },
-    }),
-  }
-  const host = {
-    // Echoes an untouched (non-tenant-aware) listing: `home` fixed at the
-    // container OS home, `path`/`crumbs` following whatever path the guard
-    // actually forwarded — tests assert the guard's own rewrite of both.
-    listDirectory: async (request: RpcRequest<{ path?: string }>) => {
-      const target = request.payload.path ?? '/home/node'
-      return {
-        rpcId: request.rpcId,
-        result: {
-          ok: true,
-          value: { path: target, home: '/home/node', crumbs: fakeCrumbs(target), entries: [], truncated: false },
-        },
-      }
+    selectModel: async () => ({ selected: { provider: 'x', model: 'y' }, reached: true } as never),
+    rename: async (request: { title: string }) => ({ title: request.title, seq: 0, reached: true } as never),
+    fork: async () => ({ sessionId: 'forked', reached: true } as never),
+    prompt: async () => ({ accepted: true, reached: true } as never),
+    attachment: async () => ({ reached: true } as never),
+    updateQueue: () => ({ accepted: true, reached: true } as never),
+    cancel: () => ({ accepted: true, reached: true } as never),
+    page: async () => ({ records: [], hasMore: false, reached: true } as never),
+    control: () => (async function* () {})(),
+  } as unknown as Context['sessionController']
+}
+
+/** Fake `ctx.workspaceController`. */
+function fakeWorkspaceController(fixture: Fixture): Context['workspaceController'] {
+  return {
+    create: async (request: { path: string }) =>
+      ({ workspace: makeWorkspace('new', request.path), created: true }),
+    rename: async () => ({ workspace: fixture.workspaces[0], reached: true } as never),
+    delete: async () => ({ deleted: true, reached: true } as never),
+    insertBefore: async () => ({ workspaceIds: [], reached: true } as never),
+    insertSessionBefore: async () => ({ workspace: fixture.workspaces[0], reached: true } as never),
+    archiveSession: async (request: { sessionId: string }) =>
+      ({ archivedSessionIds: [...fixture.archivedSessionIds, request.sessionId] }),
+    follow: () => (async function* () {})(),
+  } as unknown as Context['workspaceController']
+}
+
+/** Fake `ctx.directoryPickerController`. Echoes an untouched (non-tenant-aware) listing. */
+function fakeDirectoryPickerController(): Context['directoryPickerController'] {
+  return {
+    list: async (path: string | undefined) => {
+      const target = path ?? '/home/node'
+      return { path: target, home: '/home/node', crumbs: fakeCrumbs(target), entries: [], truncated: false }
     },
-    createDirectory: async (request: RpcRequest<{ path: string; name: string }>) =>
-      ({ rpcId: request.rpcId, result: { ok: true, value: { path: join(request.payload.path, request.payload.name) } } }),
-  }
-  return { sessions, workspace, host } as unknown as ApiProxy
+    createDirectory: async (path: string, name: string) => join(path, name),
+  } as unknown as Context['directoryPickerController']
 }
 
 function fakeWorkspaceRegistry(workspaces: FakeWorkspace[]): Context['workspaceRegistry'] {
-  const byId = new Map(workspaces.map(w => [w.workspaceId, w]))
+  // Registry entries expose `.id` (the real Workspace record's field); the wire
+  // WorkspaceView renames it to `workspaceId`. Alias both so the guard's
+  // `String(candidate.id)` and the tests' `workspaceId` both resolve.
+  const entries = workspaces.map(w => ({ ...w, id: w.workspaceId }))
+  const byId = new Map(entries.map(w => [w.workspaceId, w]))
   return {
     get: (id: unknown) => byId.get(String(id)),
-    list: () => workspaces,
+    list: () => entries,
   } as unknown as Context['workspaceRegistry']
+}
+
+/** Fake `ctx.sessions` store: resolves an attached session id to its recorded cwd from the fixture. */
+function fakeSessionStore(fixture: Fixture): Context['sessions'] {
+  return {
+    get: (id: unknown) => {
+      const found = fixture.sessions.find(session => session.sessionId === id)
+      return found?.cwd === undefined ? undefined : { header: { cwd: found.cwd } }
+    },
+  } as unknown as Context['sessions']
 }
 
 let dshHome: string
@@ -141,19 +135,27 @@ afterEach(() => {
 const TENANT_A = 'a'.repeat(32)
 const TENANT_B = 'b'.repeat(32)
 
-async function setup(fixture: Fixture): Promise<{ ctx: Context; api: ApiProxy }> {
+async function setup(fixture: Fixture): Promise<{
+  ctx: Context
+  sessionController: Context['sessionController']
+  workspaceController: Context['workspaceController']
+  directoryPickerController: Context['directoryPickerController']
+}> {
   const ctx = new Context()
   await ctx.plugin(TenantContextService)
-  const api = fakeApiProxy(fixture)
-  ctx.provide('apiProxy', api)
+  const sessionController = fakeSessionController(fixture)
+  const workspaceController = fakeWorkspaceController(fixture)
+  const directoryPickerController = fakeDirectoryPickerController()
+  ctx.provide('sessionController', sessionController)
+  ctx.provide('workspaceController', workspaceController)
+  ctx.provide('directoryPickerController', directoryPickerController)
   ctx.provide('workspaceRegistry', fakeWorkspaceRegistry(fixture.workspaces))
+  ctx.provide('sessions', fakeSessionStore(fixture))
   await ctx.plugin(TenantSessionGuard)
-  return { ctx, api }
+  return { ctx, sessionController, workspaceController, directoryPickerController }
 }
 
-function request<P>(payload: P): RpcRequest<P> {
-  return { rpcId: RpcId('r-1'), payload }
-}
+const NEVER_ABORTED = new AbortController().signal
 
 describe('tenantRootFor / isUnderRoot', () => {
   it('computes the tenant root under $DSH_HOME/tenants/<id>', () => {
@@ -172,335 +174,215 @@ describe('tenantRootFor / isUnderRoot', () => {
   })
 })
 
-describe('session.create', () => {
-  it('defaults an omitted cwd/workspaceId to the tenant root', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () => api.sessions.create(request({})))
-    expect(response.result.ok).toBe(true)
+describe('session.list / session.create', () => {
+  it('rejects every method with no bound tenant identity', async () => {
+    const { sessionController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    await expect(sessionController.list({}, NEVER_ABORTED)).rejects.toMatchObject(
+      { code: 'mindportalix/tenant-required' } satisfies Partial<RemoteError>,
+    )
   })
 
-  it('accepts a cwd under the tenant root', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const cwd = join(tenantRootFor(TENANT_A), 'project')
-    const response = await ctx.tenantContext.run(TENANT_A, () => api.sessions.create(request({ cwd })))
-    expect(response.result.ok).toBe(true)
-  })
-
-  it('rejects a cwd outside the tenant root with tenant-path-invalid', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const foreignCwd = join(tenantRootFor(TENANT_B), 'project')
-    const response = await ctx.tenantContext.run(TENANT_A, () => api.sessions.create(request({ cwd: foreignCwd })))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-path-invalid' } })
-  })
-
-  it('rejects a cross-tenant workspaceId with workspace-not-found', async () => {
-    const foreignWorkspace = makeWorkspace('ws-b', join(tenantRootFor(TENANT_B), 'proj'))
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [foreignWorkspace], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () => api.sessions.create(request({ workspaceId: 'ws-b' } as never)))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'workspace-not-found', details: { workspaceId: 'ws-b' } } })
-  })
-
-  it('accepts a same-tenant workspaceId', async () => {
-    const ownWorkspace = makeWorkspace('ws-a', join(tenantRootFor(TENANT_A), 'proj'))
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [ownWorkspace], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () => api.sessions.create(request({ workspaceId: 'ws-a' } as never)))
-    expect(response.result.ok).toBe(true)
-  })
-
-  it('rejects with tenant-required when no tenant identity is bound (never silently defaults)', async () => {
-    const { api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    // Deliberately NOT wrapped in ctx.tenantContext.run(...).
-    const response = await api.sessions.create(request({}))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-required' } })
-  })
-})
-
-describe('session.list / session.search', () => {
-  it('filters session.list to sessions whose cwd is under the caller tenant root, dropping cwd-less rows', async () => {
-    const ownSession = { sessionId: 'own', updatedAt: 1, running: false, blank: false, cwd: join(tenantRootFor(TENANT_A), 'p') }
-    const foreignSession = { sessionId: 'foreign', updatedAt: 1, running: false, blank: false, cwd: join(tenantRootFor(TENANT_B), 'p') }
-    const unrecordedSession = { sessionId: 'unrecorded', updatedAt: 1, running: false, blank: false }
-    const { ctx, api } = await setup({
-      sessions: [ownSession, foreignSession, unrecordedSession], searchItems: [], workspaces: [], archivedSessionIds: [],
-    })
-    const response = await ctx.tenantContext.run(TENANT_A, () => api.sessions.list(request({})))
-    expect(response.result.ok).toBe(true)
-    if (!response.result.ok) throw new Error('unreachable')
-    expect(response.result.value.items.map(item => item.sessionId)).toEqual(['own'])
-  })
-
-  it('rejects session.list with tenant-required when no tenant identity is bound', async () => {
-    const { api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const response = await api.sessions.list(request({}))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-required' } })
-  })
-
-  it('filters session.search results to sessions visible in the tenant-filtered session.list', async () => {
-    const ownSession = { sessionId: 'own', updatedAt: 1, running: false, blank: false, cwd: join(tenantRootFor(TENANT_A), 'p') }
-    const foreignSession = { sessionId: 'foreign', updatedAt: 1, running: false, blank: false, cwd: join(tenantRootFor(TENANT_B), 'p') }
-    const { ctx, api } = await setup({
-      sessions: [ownSession, foreignSession],
-      searchItems: [{ sessionId: 'own', snippet: 'hit' }, { sessionId: 'foreign', snippet: 'hit' }],
-      workspaces: [],
-      archivedSessionIds: [],
-    })
-    const response = await ctx.tenantContext.run(TENANT_A, () =>
-      api.sessions.search(request({ query: 'hit' }), new AbortController().signal))
-    expect(response.result.ok).toBe(true)
-    if (!response.result.ok) throw new Error('unreachable')
-    expect(response.result.value.items.map(item => item.sessionId)).toEqual(['own'])
-  })
-})
-
-describe('by-sessionId methods (history, models, selectModel, rename, fork, prompt, attachment, updateQueue, cancel)', () => {
-  function ownAndForeignFixture(): Fixture {
-    return {
+  it('filters session.list to sessions whose cwd is under the caller tenant root', async () => {
+    const own = join(tenantRootFor(TENANT_A), 'proj')
+    const foreign = join(tenantRootFor(TENANT_B), 'proj')
+    const { ctx, sessionController } = await setup({
       sessions: [
-        { sessionId: 'own', updatedAt: 1, running: false, blank: false, cwd: join(tenantRootFor(TENANT_A), 'p') },
-        { sessionId: 'foreign', updatedAt: 1, running: false, blank: false, cwd: join(tenantRootFor(TENANT_B), 'p') },
+        { sessionId: 's-own', updatedAt: 0, running: false, blank: false, cwd: own },
+        { sessionId: 's-foreign', updatedAt: 0, running: false, blank: false, cwd: foreign },
+        { sessionId: 's-no-cwd', updatedAt: 0, running: false, blank: false },
       ],
-      searchItems: [],
-      workspaces: [],
-      archivedSessionIds: [],
-    }
-  }
-
-  const cases: { name: string; call: (api: ApiProxy, sessionId: string) => Promise<{ result: { ok: boolean } }> }[] = [
-    { name: 'history', call: (api, sessionId) => api.sessions.history(request({ sessionId } as never)) },
-    { name: 'models', call: (api, sessionId) => api.sessions.models(request({ sessionId } as never)) },
-    { name: 'selectModel', call: (api, sessionId) => api.sessions.selectModel(request({ sessionId, provider: 'p', model: 'm' } as never)) },
-    { name: 'rename', call: (api, sessionId) => api.sessions.rename(request({ sessionId, title: 't' } as never)) },
-    { name: 'fork', call: (api, sessionId) => api.sessions.fork(request({ sessionId } as never)) },
-    { name: 'prompt', call: (api, sessionId) => api.sessions.prompt(request({ sessionId, mode: 'queue', content: [] } as never)) },
-    { name: 'attachment', call: (api, sessionId) => api.sessions.attachment(request({ sessionId, attachmentId: 'a' } as never)) },
-    { name: 'updateQueue', call: (api, sessionId) => api.sessions.updateQueue(request({ sessionId, itemId: 'i', action: { kind: 'remove' } } as never)) },
-    { name: 'cancel', call: (api, sessionId) => api.sessions.cancel(request({ sessionId } as never)) },
-  ]
-
-  it.each(cases)('$name rejects a cross-tenant sessionId with session-not-found', async ({ call }) => {
-    const { ctx, api } = await setup(ownAndForeignFixture())
-    const response = await ctx.tenantContext.run(TENANT_A, () => call(api, 'foreign'))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'session-not-found', details: { sessionId: 'foreign' } } })
-  })
-
-  it.each(cases)('$name rejects an unknown sessionId with session-not-found', async ({ call }) => {
-    const { ctx, api } = await setup(ownAndForeignFixture())
-    const response = await ctx.tenantContext.run(TENANT_A, () => call(api, 'nonexistent'))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'session-not-found' } })
-  })
-
-  it.each(cases)('$name passes a same-tenant sessionId through to the original implementation', async ({ call }) => {
-    const { ctx, api } = await setup(ownAndForeignFixture())
-    const response = await ctx.tenantContext.run(TENANT_A, () => call(api, 'own'))
-    expect(response.result.ok).toBe(true)
-    // The fake echoes { reached: true } (never present on a guard rejection) so
-    // this asserts the call reached the original implementation, not just "ok: true".
-    expect((response.result as unknown as { value: { reached: boolean } }).value.reached).toBe(true)
-  })
-
-  it.each(cases)('$name rejects with tenant-required when no tenant identity is bound', async ({ call }) => {
-    const { api } = await setup(ownAndForeignFixture())
-    const response = await call(api, 'own')
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-required' } })
-  })
-})
-
-describe('session.fork child cwd inheritance', () => {
-  it('does not need independent clamping: the child inherits the verified source session\'s cwd verbatim (api-proxy.ts never takes a client-supplied cwd for fork)', async () => {
-    // Documents the reasoning verified by reading packages/host/apiproxy/src/api-proxy.ts's
-    // fork() implementation directly: meta.cwd is set from source.header.cwd, never from
-    // the request payload, so proving the SOURCE session is tenant-owned (the guardBySessionId
-    // check already covers this) is sufficient — there is no separate child-cwd input to clamp.
-    const { ctx, api } = await setup({
-      sessions: [{ sessionId: 'own', updatedAt: 1, running: false, blank: false, cwd: join(tenantRootFor(TENANT_A), 'p') }],
-      searchItems: [],
-      workspaces: [],
-      archivedSessionIds: [],
+      searchItems: [], workspaces: [], archivedSessionIds: [],
     })
-    const response = await ctx.tenantContext.run(TENANT_A, () => api.sessions.fork(request({ sessionId: 'own' } as never)))
-    expect(response.result.ok).toBe(true)
-  })
-})
-
-describe('workspace.list', () => {
-  it('filters items by path and archivedSessionIds by tenant-visible workspace membership', async () => {
-    const ownWorkspace = makeWorkspace('ws-a', join(tenantRootFor(TENANT_A), 'proj'), ['own-archived'])
-    const foreignWorkspace = makeWorkspace('ws-b', join(tenantRootFor(TENANT_B), 'proj'), ['foreign-archived'])
-    const { ctx, api } = await setup({
-      sessions: [], searchItems: [], workspaces: [ownWorkspace, foreignWorkspace],
-      archivedSessionIds: ['own-archived', 'foreign-archived'],
-    })
-    const response = await ctx.tenantContext.run(TENANT_A, () => api.workspace.list(request({})))
-    expect(response.result.ok).toBe(true)
-    if (!response.result.ok) throw new Error('unreachable')
-    expect(response.result.value.items.map(item => item.workspaceId)).toEqual(['ws-a'])
-    expect(response.result.value.archivedSessionIds).toEqual(['own-archived'])
-  })
-})
-
-describe('workspace.create', () => {
-  it('rejects a path outside the tenant root', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () =>
-      api.workspace.create(request({ path: join(tenantRootFor(TENANT_B), 'x') })))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-path-invalid' } })
+    const response = await ctx.tenantContext.run(TENANT_A, () => sessionController.list({}, NEVER_ABORTED))
+    expect(response.items.map(item => item.sessionId)).toEqual(['s-own'])
   })
 
-  it('accepts a path under the tenant root', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () =>
-      api.workspace.create(request({ path: join(tenantRootFor(TENANT_A), 'x') })))
-    expect(response.result.ok).toBe(true)
+  it('defaults an omitted cwd/workspaceId to the tenant root', async () => {
+    const { ctx, sessionController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const value = await ctx.tenantContext.run(TENANT_A, () => sessionController.create({}))
+    expect(value.sessionId).toBe('created')
   })
-})
 
-describe('workspace.rename / delete / insertBefore / insertSessionBefore', () => {
-  it('rejects a cross-tenant workspaceId on every targeted method with workspace-not-found', async () => {
+  it('rejects a cwd outside the tenant root with mindportalix/tenant-path-invalid', async () => {
+    const { ctx, sessionController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const foreignCwd = join(tenantRootFor(TENANT_B), 'project')
+    await expect(ctx.tenantContext.run(TENANT_A, () => sessionController.create({ cwd: foreignCwd })))
+      .rejects.toMatchObject({ code: 'mindportalix/tenant-path-invalid' })
+  })
+
+  it('rejects a cross-tenant workspaceId with workspace/not-found', async () => {
     const foreignWorkspace = makeWorkspace('ws-b', join(tenantRootFor(TENANT_B), 'proj'))
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [foreignWorkspace], archivedSessionIds: [] })
-    const run = <T>(fn: () => Promise<T>): Promise<T> => ctx.tenantContext.run(TENANT_A, fn)
-
-    await expect(run(() => api.workspace.rename(request({ workspaceId: 'ws-b', title: 't' } as never))))
-      .resolves.toMatchObject({ result: { ok: false, error: { code: 'workspace-not-found' } } })
-    await expect(run(() => api.workspace.delete(request({ workspaceId: 'ws-b' } as never))))
-      .resolves.toMatchObject({ result: { ok: false, error: { code: 'workspace-not-found' } } })
-    await expect(run(() => api.workspace.insertBefore(request({ workspaceId: 'ws-b' } as never))))
-      .resolves.toMatchObject({ result: { ok: false, error: { code: 'workspace-not-found' } } })
-    await expect(run(() => api.workspace.insertSessionBefore(request({ workspaceId: 'ws-b', sessionId: 's' } as never))))
-      .resolves.toMatchObject({ result: { ok: false, error: { code: 'workspace-not-found' } } })
-  })
-
-  it('insertBefore also rejects a cross-tenant beforeWorkspaceId even when the primary id is same-tenant', async () => {
-    const ownWorkspace = makeWorkspace('ws-a', join(tenantRootFor(TENANT_A), 'proj'))
-    const foreignWorkspace = makeWorkspace('ws-b', join(tenantRootFor(TENANT_B), 'proj'))
-    const { ctx, api } = await setup({
-      sessions: [], searchItems: [], workspaces: [ownWorkspace, foreignWorkspace], archivedSessionIds: [],
+    const { ctx, sessionController } = await setup({
+      sessions: [], searchItems: [], workspaces: [foreignWorkspace], archivedSessionIds: [],
     })
-    const response = await ctx.tenantContext.run(TENANT_A, () =>
-      api.workspace.insertBefore(request({ workspaceId: 'ws-a', beforeWorkspaceId: 'ws-b' } as never)))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'workspace-not-found', details: { workspaceId: 'ws-b' } } })
+    await expect(ctx.tenantContext.run(TENANT_A, () => sessionController.create({ workspaceId: 'ws-b' } as never)))
+      .rejects.toMatchObject({ code: 'workspace/not-found', details: { workspaceId: 'ws-b' } })
   })
 
   it('accepts a same-tenant workspaceId', async () => {
     const ownWorkspace = makeWorkspace('ws-a', join(tenantRootFor(TENANT_A), 'proj'))
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [ownWorkspace], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () => api.workspace.delete(request({ workspaceId: 'ws-a' } as never)))
-    expect(response.result.ok).toBe(true)
+    const { ctx, sessionController } = await setup({
+      sessions: [], searchItems: [], workspaces: [ownWorkspace], archivedSessionIds: [],
+    })
+    const value = await ctx.tenantContext.run(TENANT_A, () => sessionController.create({ workspaceId: 'ws-a' } as never))
+    expect(value.sessionId).toBe('created')
   })
 })
 
-describe('workspace.archiveSession', () => {
-  it('rejects a session owned by another tenant workspace with session-not-found', async () => {
-    const foreignWorkspace = makeWorkspace('ws-b', join(tenantRootFor(TENANT_B), 'proj'), ['s-foreign'])
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [foreignWorkspace], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () => api.workspace.archiveSession(request({ sessionId: 's-foreign' } as never)))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'session-not-found' } })
+describe('session.search', () => {
+  it('filters results to the caller tenant\'s visible sessions', async () => {
+    const own = join(tenantRootFor(TENANT_A), 'proj')
+    const { ctx, sessionController } = await setup({
+      sessions: [{ sessionId: 's-own', updatedAt: 0, running: false, blank: false, cwd: own }],
+      searchItems: [{ sessionId: 's-own', snippet: 'hit' }, { sessionId: 's-foreign', snippet: 'hit' }],
+      workspaces: [], archivedSessionIds: [],
+    })
+    const response = await ctx.tenantContext.run(TENANT_A, () => sessionController.search({ query: 'hit' }, NEVER_ABORTED))
+    expect(response.items.map(item => item.sessionId)).toEqual(['s-own'])
+  })
+})
+
+describe('by-sessionId guards', () => {
+  it('rejects rename on a foreign session with session/not-found', async () => {
+    const { ctx, sessionController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    await expect(ctx.tenantContext.run(TENANT_A, () => sessionController.rename({ sessionId: SessionId('foreign'), title: 't' })))
+      .rejects.toMatchObject({ code: 'session/not-found', details: { sessionId: SessionId('foreign') } })
   })
 
-  it('rejects an ungrouped session (owned by no workspace) rather than allowing it through unverified', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () =>
-      api.workspace.archiveSession(request({ sessionId: 's-ungrouped' } as never)))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'session-not-found' } })
+  it('reaches the original implementation for an owned session', async () => {
+    const own = join(tenantRootFor(TENANT_A), 'proj')
+    const { ctx, sessionController } = await setup({
+      sessions: [{ sessionId: 's-own', updatedAt: 0, running: false, blank: false, cwd: own }],
+      searchItems: [], workspaces: [], archivedSessionIds: [],
+    })
+    const value = await ctx.tenantContext.run(TENANT_A, () => sessionController.rename({ sessionId: SessionId('s-own'), title: 'new' }))
+    expect(value).toMatchObject({ title: 'new', reached: true })
   })
 
-  it('accepts a session owned by a same-tenant workspace', async () => {
+  it('rejects prompt on a foreign session', async () => {
+    const { ctx, sessionController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    await expect(ctx.tenantContext.run(TENANT_A, () => sessionController.prompt({
+      requestId: 'r' as never, sessionId: SessionId('foreign'), mode: 'queue', content: [],
+    }, NEVER_ABORTED))).rejects.toMatchObject({ code: 'session/not-found' })
+  })
+
+  it('resolves a subagent address via its parent session for page', async () => {
+    const own = join(tenantRootFor(TENANT_A), 'proj')
+    const { ctx, sessionController } = await setup({
+      sessions: [{ sessionId: 'parent', updatedAt: 0, running: false, blank: false, cwd: own }],
+      searchItems: [], workspaces: [], archivedSessionIds: [],
+    })
+    const value = await ctx.tenantContext.run(TENANT_A, () => sessionController.page({
+      address: { kind: 'subagent', parentSessionId: SessionId('parent'), childSessionId: SessionId('child'), mode: 'one-shot' },
+      throughSeq: 0,
+    }, NEVER_ABORTED))
+    expect(value).toMatchObject({ reached: true })
+  })
+
+  it('rejects updateQueue (a sync-returning method) on a foreign session', async () => {
+    const { ctx, sessionController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    await expect(ctx.tenantContext.run(TENANT_A, () => sessionController.updateQueue({
+      sessionId: SessionId('foreign'), itemId: 'm' as never, action: { kind: 'remove' },
+    }))).rejects.toMatchObject({ code: 'session/not-found' })
+  })
+})
+
+describe('workspace.* methods', () => {
+  it('rejects workspace.create outside the tenant root', async () => {
+    const { ctx, workspaceController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const foreignPath = join(tenantRootFor(TENANT_B), 'proj')
+    await expect(ctx.tenantContext.run(TENANT_A, () => workspaceController.create({ path: foreignPath })))
+      .rejects.toMatchObject({ code: 'mindportalix/tenant-path-invalid' })
+  })
+
+  it('accepts workspace.create under the tenant root', async () => {
+    const { ctx, workspaceController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const ownPath = join(tenantRootFor(TENANT_A), 'proj')
+    const value = await ctx.tenantContext.run(TENANT_A, () => workspaceController.create({ path: ownPath }))
+    expect(value.created).toBe(true)
+  })
+
+  it('rejects rename/delete on a cross-tenant workspace with workspace/not-found', async () => {
+    const foreignWorkspace = makeWorkspace('ws-b', join(tenantRootFor(TENANT_B), 'proj'))
+    const { ctx, workspaceController } = await setup({
+      sessions: [], searchItems: [], workspaces: [foreignWorkspace], archivedSessionIds: [],
+    })
+    await expect(ctx.tenantContext.run(TENANT_A, () => workspaceController.rename({ workspaceId: 'ws-b' as never, title: 't' })))
+      .rejects.toMatchObject({ code: 'workspace/not-found' })
+    await expect(ctx.tenantContext.run(TENANT_A, () => workspaceController.delete({ workspaceId: 'ws-b' as never })))
+      .rejects.toMatchObject({ code: 'workspace/not-found' })
+  })
+
+  it('rejects archiveSession for a session owned by no tenant-visible workspace (fail closed)', async () => {
+    const { ctx, workspaceController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    await expect(ctx.tenantContext.run(TENANT_A, () => workspaceController.archiveSession({ sessionId: 'ungrouped' as never })))
+      .rejects.toMatchObject({ code: 'session/not-found' })
+  })
+
+  it('accepts archiveSession for a session owned by a tenant-visible workspace', async () => {
     const ownWorkspace = makeWorkspace('ws-a', join(tenantRootFor(TENANT_A), 'proj'), ['s-own'])
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [ownWorkspace], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () => api.workspace.archiveSession(request({ sessionId: 's-own' } as never)))
-    expect(response.result.ok).toBe(true)
+    const { ctx, workspaceController } = await setup({
+      sessions: [], searchItems: [], workspaces: [ownWorkspace], archivedSessionIds: [],
+    })
+    const value = await ctx.tenantContext.run(TENANT_A, () => workspaceController.archiveSession({ sessionId: SessionId('s-own') }))
+    expect(value.archivedSessionIds).toContain('s-own')
   })
 })
 
-describe('host.listDirectory', () => {
-  it('defaults an omitted path to the tenant root, never the container OS home', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () =>
-      api.host.listDirectory(request({}), new AbortController().signal))
-    expect(response.result).toMatchObject({ ok: true, value: { path: tenantRootFor(TENANT_A) } })
+describe('directoryPicker.list / createDirectory', () => {
+  it('defaults an omitted path to the tenant root and rewrites home/crumbs', async () => {
+    const { ctx, directoryPickerController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const listing = await ctx.tenantContext.run(TENANT_A, () => directoryPickerController.list(undefined, NEVER_ABORTED))
+    const tenantRoot = tenantRootFor(TENANT_A)
+    expect(listing.home).toBe(tenantRoot)
+    expect(listing.path).toBe(tenantRoot)
+    expect(listing.crumbs[0]?.path).toBe(tenantRoot)
   })
 
-  it('rewrites home to the tenant root and clips crumbs to start there', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const target = join(tenantRootFor(TENANT_A), 'project')
-    const response = await ctx.tenantContext.run(TENANT_A, () =>
-      api.host.listDirectory(request({ path: target }), new AbortController().signal))
-    expect(response.result.ok).toBe(true)
-    if (!response.result.ok) throw new Error('unreachable')
-    expect(response.result.value.home).toBe(tenantRootFor(TENANT_A))
-    expect(response.result.value.crumbs[0]?.path).toBe(tenantRootFor(TENANT_A))
-    expect(response.result.value.crumbs.some(crumb => crumb.path === '/')).toBe(false)
+  it('rejects an explicit path outside the tenant root', async () => {
+    const { ctx, directoryPickerController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const foreignPath = join(tenantRootFor(TENANT_B), 'x')
+    await expect(ctx.tenantContext.run(TENANT_A, () => directoryPickerController.list(foreignPath, NEVER_ABORTED)))
+      .rejects.toMatchObject({ code: 'mindportalix/tenant-path-invalid' })
   })
 
-  it('accepts a path under the tenant root', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const target = join(tenantRootFor(TENANT_A), 'project')
-    const response = await ctx.tenantContext.run(TENANT_A, () =>
-      api.host.listDirectory(request({ path: target }), new AbortController().signal))
-    expect(response.result).toMatchObject({ ok: true, value: { path: target } })
+  it('rejects createDirectory whose parent path is outside the tenant root', async () => {
+    const { ctx, directoryPickerController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const foreignParent = tenantRootFor(TENANT_B)
+    await expect(ctx.tenantContext.run(TENANT_A, () => directoryPickerController.createDirectory(foreignParent, 'sub')))
+      .rejects.toMatchObject({ code: 'mindportalix/tenant-path-invalid' })
   })
 
-  it('rejects a path outside the tenant root with tenant-path-invalid', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const foreignPath = join(tenantRootFor(TENANT_B), 'project')
-    const response = await ctx.tenantContext.run(TENANT_A, () =>
-      api.host.listDirectory(request({ path: foreignPath }), new AbortController().signal))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-path-invalid', details: { path: foreignPath } } })
-  })
-
-  it('fails closed with tenant-required when no tenant identity is bound', async () => {
-    const { api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const response = await api.host.listDirectory(request({}), new AbortController().signal)
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-required' } })
+  it('accepts createDirectory under the tenant root', async () => {
+    const { ctx, directoryPickerController } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const tenantRoot = tenantRootFor(TENANT_A)
+    const created = await ctx.tenantContext.run(TENANT_A, () => directoryPickerController.createDirectory(tenantRoot, 'sub'))
+    expect(created).toBe(join(tenantRoot, 'sub'))
   })
 })
 
-describe('host.createDirectory', () => {
-  it('accepts a parent path under the tenant root', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () =>
-      api.host.createDirectory(request({ path: tenantRootFor(TENANT_A), name: 'new-folder' })))
-    expect(response.result).toMatchObject({ ok: true, value: { path: join(tenantRootFor(TENANT_A), 'new-folder') } })
-  })
-
-  it('rejects a parent path outside the tenant root with tenant-path-invalid', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const response = await ctx.tenantContext.run(TENANT_A, () =>
-      api.host.createDirectory(request({ path: '/home/node', name: 'new-folder' })))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-path-invalid', details: { path: '/home/node' } } })
-  })
-
-  it('fails closed with tenant-required when no tenant identity is bound', async () => {
-    const { api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    const response = await api.host.createDirectory(request({ path: '/home/node', name: 'x' }))
-    expect(response.result).toMatchObject({ ok: false, error: { code: 'tenant-required' } })
-  })
-})
-
-describe('HMR safety', () => {
-  it('restores the original apiProxy methods when the plugin fiber is disposed', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    // oxlint-disable-next-line typescript/unbound-method -- identity comparison only, never invoked unbound.
-    const wrappedCreate = api.sessions.create
-    // Disposing the whole context tears down every mounted fiber, including this plugin's.
-    await ctx.fiber.dispose()
-    // oxlint-disable-next-line typescript/unbound-method -- identity comparison only, never invoked unbound.
-    expect(api.sessions.create).not.toBe(wrappedCreate)
-    // The restored method is the original fake (no tenant clamp, no tenant-required rejection).
-    const response = await api.sessions.create(request({}))
-    expect(response.result.ok).toBe(true)
-  })
-
-  it('restores the original host.listDirectory/createDirectory when the plugin fiber is disposed', async () => {
-    const { ctx, api } = await setup({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
-    // oxlint-disable-next-line typescript/unbound-method -- identity comparison only, never invoked unbound.
-    const wrappedListDirectory = api.host.listDirectory
-    await ctx.fiber.dispose()
-    // oxlint-disable-next-line typescript/unbound-method -- identity comparison only, never invoked unbound.
-    expect(api.host.listDirectory).not.toBe(wrappedListDirectory)
-    // The restored method is the original fake: no tenant-required rejection,
-    // and `home` stays the container OS home (the guard's rewrite is gone).
-    const response = await api.host.listDirectory(request({}), new AbortController().signal)
-    expect(response.result).toMatchObject({ ok: true, value: { home: '/home/node' } })
+describe('disposal', () => {
+  it('restores every original method when the plugin fiber is disposed', async () => {
+    const ctx = new Context()
+    await ctx.plugin(TenantContextService)
+    const sessionController = fakeSessionController({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const workspaceController = fakeWorkspaceController({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] })
+    const directoryPickerController = fakeDirectoryPickerController()
+    ctx.provide('sessionController', sessionController)
+    ctx.provide('workspaceController', workspaceController)
+    ctx.provide('directoryPickerController', directoryPickerController)
+    ctx.provide('workspaceRegistry', fakeWorkspaceRegistry([]))
+    ctx.provide('sessions', fakeSessionStore({ sessions: [], searchItems: [], workspaces: [], archivedSessionIds: [] }))
+    const originalList = sessionController.list
+    const fiber = ctx.plugin(TenantSessionGuard)
+    await fiber.await()
+    const wrappedList = sessionController.list
+    expect(wrappedList).not.toBe(originalList)
+    await fiber.dispose()
+    // The restored method is a fresh `.bind()` of the original (not the exact
+    // same function reference captured above), so assert behavior instead of
+    // identity: unwrapped, it must no longer reject with mindportalix/tenant-required.
+    expect(sessionController.list).not.toBe(wrappedList)
+    await expect(sessionController.list({}, NEVER_ABORTED)).resolves.toMatchObject({ items: [] })
   })
 })

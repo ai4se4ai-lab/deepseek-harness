@@ -39,10 +39,12 @@
     - id: tenant-context
       name: '@mindportalix/dsh-tenant-context'
 
-    # Wraps ctx.apiProxy.sessions.{create,list,search} and
-    # ctx.apiProxy.workspace.* to clamp every cwd/workspaceId to the caller's
-    # $DSH_HOME/tenants/<tenantId> root. Requires apiProxy + workspaceRegistry,
-    # both already mounted by the base/web-app bundle layers beneath this one.
+    # Wraps ctx.sessionController.{list,search,create,...} and
+    # ctx.workspaceController.* (plus ctx.directoryPickerController.*) to clamp
+    # every cwd/workspaceId/path to the caller's $DSH_HOME/tenants/<tenantId>
+    # root. Requires those Services + workspaceRegistry, all already mounted by
+    # the base/web-app bundle layers beneath this one. See that package's
+    # README for the known gap in Remote-stream (WebSocket-mux) scoping.
     - id: tenant-session-guard
       name: '@mindportalix/dsh-tenant-session-guard'
 
@@ -64,10 +66,37 @@
     - id: tenant-sandbox
       name: '@mindportalix/dsh-tenant-sandbox-local'
 
+# Disable the upstream credential provider (confirmed exact id: `credentials`,
+# packages/bundle/base/cordis.patch.yml) — it reads and writes ONE shared
+# $DSH_HOME/.credentials.yaml for the whole container, so the first user to
+# paste a DEEPSEEK_API_KEY into the harness's onboarding modal sets it for
+# every other tenant. Same disable-the-base-row + insert-a-replacement-row
+# shape as the sandbox swap above (an id-targeted patch can never change which
+# package a row loads).
+- id: credentials
+  disabled: true
+
+# Mount the tenant-scoped fork in its place. It still registers as
+# `ctx.credentials` (the Cordis service key comes from the plugin's own
+# CredentialProvider base-class constructor call, not from this row's id), so
+# the llm-deepseek / llm-pi-ai adapters resolve their apiKeyEnv references
+# through it unchanged. Every reference and record now resolves and persists
+# under the caller's own $DSH_HOME/tenants/<tenantId>/.credentials.yaml, read
+# per request from ctx.tenantContext; the inherited process environment stays
+# a single shared layer, which is why docker-compose.dsh.yml keeps
+# DEEPSEEK_API_KEY unset. With no tenant bound (never, on the proxy path) it
+# falls back to the shared $DSH_HOME/.credentials.yaml, so a bare `dsh` CLI
+# run in the checkout is unaffected. No config: the schema defaults
+# (dshHome=$DSH_HOME, sharedPath=$DSH_HOME/.credentials.yaml, watch=true)
+# match the disabled base row's behavior for that fallback path.
+- insert:
+    - id: tenant-credentials
+      name: '@mindportalix/dsh-tenant-credentials-local'
+
 # Close the one escalation path this task's session-guard cannot intercept at
 # the RPC layer: session.create's wire payload carries no mode/danger-full-access
-# field at all (packages/host/apiproxy/src/api/sessions.schema.ts) — that mode is
-# reached only by selecting a permission preset
+# field at all (SessionCreateRequest, packages/api/session-controller/src/types.ts)
+# — that mode is reached only by selecting a permission preset
 # (packages/interaction/permission-presets), and once granted it BYPASSES
 # sandbox confinement entirely by upstream design
 # (ConfinedSandboxMode = Exclude<SandboxMode, 'danger-full-access'> in

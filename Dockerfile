@@ -38,15 +38,23 @@ COPY apps ./apps
 # run here, but scripts/project-doc-site.ts (compiled by the host tsc build)
 # imports website/docs.ts, so the directory travels whole (128K, tiny).
 COPY website ./website
+# tsconfig.host.json's include list type-checks a curated set of scripts/*
+# specs (e.g. scripts/session-query-spill-command.spec.ts), which import
+# generated fixtures out of snapshots/ — needed for `pnpm run build`'s tsc -b
+# to resolve, even though nothing here executes the tests (7.9M, tiny).
+COPY snapshots ./snapshots
 
 # The landlock-run binary is a CI release artifact (gitignored under
-# native/landlock-run/packages/linux-*/bin/). Without it, workspace-write bash
+# native/system/packages/linux-*/bin/). Without it, workspace-write bash
 # fails closed with SANDBOX_UNAVAILABLE — agents talk about creating files but
 # never write them, so My Workspace → DSH Files stays empty. Build it here from
 # the checked-in C source so every MindPortalix image ships a working Landlock
 # backend. (bwrap is still installed at runtime, but many Docker hosts set
 # apparmor_restrict_unprivileged_userns=1, which makes bwrap unusable; Landlock
 # is the backend that actually engages in that common case.)
+#
+# native/system is the current workspace (native/README.md); the older
+# native/landlock-run layout was renamed away and no longer exists on disk.
 ARG TARGETARCH
 RUN set -eux; \
     case "${TARGETARCH}" in \
@@ -54,8 +62,8 @@ RUN set -eux; \
       arm64|aarch64) ll_arch=arm64 ;; \
       *) echo "unsupported TARGETARCH=${TARGETARCH} for landlock-run"; exit 1 ;; \
     esac; \
-    src=native/landlock-run/packages/entry/src/main.c; \
-    out=native/landlock-run/packages/linux-${ll_arch}/bin/landlock-run; \
+    src=native/system/packages/entry/src/main.c; \
+    out=native/system/packages/linux-${ll_arch}/bin/landlock-run; \
     mkdir -p "$(dirname "$out")"; \
     musl-gcc -std=c11 -Os -Wall -Wextra -Werror -static -s -o "$out" "$src"; \
     "$out" --probe
@@ -88,7 +96,7 @@ WORKDIR /app
 # Sandbox backends for workspace-write (tenant isolation):
 # - bubblewrap: installed here; often unusable under Docker when the host sets
 #   apparmor_restrict_unprivileged_userns=1 (bwrap cannot create a user namespace).
-# - landlock-run: compiled in the deps stage from native/landlock-run (see above)
+# - landlock-run: compiled in the deps stage from native/system (see above)
 #   and copied via /app/native — that is the backend that actually engages on
 #   typical Docker Desktop / Ubuntu hosts. Without it, bash/npx fail with
 #   SANDBOX_UNAVAILABLE and DSH Files stay empty for shell-created projects.

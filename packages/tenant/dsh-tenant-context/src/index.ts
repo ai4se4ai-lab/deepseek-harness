@@ -3,13 +3,17 @@
  * MindPortalix reverse proxy's trusted `x-mp-dsh-tenant` header and carries the
  * resolved tenant id through the request's whole async call chain via
  * `node:async_hooks` `AsyncLocalStorage`. Every other tenant-isolation package
- * (`@mindportalix/dsh-tenant-session-guard`, `@mindportalix/dsh-tenant-sandbox-local`)
- * reads tenant identity exclusively through this service's {@link
+ * (`@mindportalix/dsh-tenant-session-guard`, `@mindportalix/dsh-tenant-sandbox-local`,
+ * `@mindportalix/dsh-tenant-credentials-local`) reads tenant identity exclusively
+ * through this service's {@link
  * TenantContextService.current} / {@link TenantContextService.requireCurrent} and MUST
  * fail closed when it is absent: this package never defaults an absent or malformed
  * header to a shared/default tenant, and `requireCurrent` is the one primitive that
  * turns "no tenant bound" into a thrown, structured error instead of a silent
- * fall-through.
+ * fall-through. (`dsh-tenant-credentials-local` is the one deliberate exception:
+ * with no tenant bound it resolves the shared `$DSH_HOME/.credentials.yaml`, so a
+ * bare `dsh` CLI run in the checkout keeps working; on the proxy path a tenant is
+ * always bound.)
  * @module @mindportalix/dsh-tenant-context
  */
 

@@ -68,4 +68,27 @@ describe('bundleSnapshot', () => {
     expect(text).toMatch(/… \(list truncated\)$/)
     expect(text).toMatch(/^OKF knowledge bundle — 50 concept\(s\)\./)
   })
+
+  it('lists inline when at or below maxConcepts', () => {
+    const some = Array.from({ length: 3 }, (_, i) => concept({ id: `metrics/m${i}`, title: `Metric ${i}` }))
+    const text = bundleSnapshot({ exists: true, concepts: some }, 4096, 3)
+    expect(text).toMatch(/- metrics\/m0 — Metric 0/)
+    expect(text).not.toMatch(/okf_retrieve_context/)
+  })
+
+  it('replaces the list with a retrieval pointer when over maxConcepts', () => {
+    const many = Array.from({ length: 5 }, (_, i) => concept({ id: `metrics/m${i}`, title: `Metric ${i}` }))
+    const text = bundleSnapshot({ exists: true, concepts: many }, 4096, 3)
+    expect(text).toBe(
+      'OKF knowledge bundle — 5 concept(s). Too many to list here; '
+      + 'call okf_retrieve_context with the question you are answering to pull the most relevant, '
+      + 'chain-verified concepts, or okf_search_concepts to filter by type / tag / text.',
+    )
+  })
+
+  it('maxConcepts = 0 disables the cap (always lists)', () => {
+    const many = Array.from({ length: 5 }, (_, i) => concept({ id: `metrics/m${i}`, title: `Metric ${i}` }))
+    const text = bundleSnapshot({ exists: true, concepts: many }, 4096, 0)
+    expect(text).toMatch(/- metrics\/m4 — Metric 4/)
+  })
 })

@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import AgentRegistry, { agentEvents, Inbox, type Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { agentEvents, type Agent, type Inbox } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import OkfBundle from '@mindportalix/dsh-okf-bundle'
 import * as okfContext from '../src/index.ts'
@@ -24,7 +24,7 @@ async function mount(config: Partial<okfContext.Config> = {}): Promise<void> {
   ctx = new Context()
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(OkfBundle, { root })
-  await ctx.plugin(okfContext, { maxBytes: 32768, refreshIntervalMs: 0, ...config })
+  await ctx.plugin(okfContext, { maxBytes: 32768, refreshIntervalMs: 0, snapshotMaxConcepts: 40, ...config })
 }
 
 function agentFor(session: Session): Agent {
@@ -32,7 +32,15 @@ function agentFor(session: Session): Agent {
     id: SessionId('agent'),
     options: {},
     session,
-    inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+    inbox: {
+      nextTurn: [], nextStep: [],
+      clear: () => {},
+      append: () => {},
+      prepend: () => {},
+      replace: () => false,
+      remove: () => false,
+      splice: () => [],
+    } satisfies Inbox,
     status: 'running',
     ctx: new Context(),
     send: () => {},
@@ -78,6 +86,11 @@ describe('config validation', () => {
     await expect(mount({ maxBytes: -1 })).rejects.toThrow(/non-negative safe integer/)
     await expect(mount({ refreshIntervalMs: 1.5 })).rejects.toThrow(/non-negative safe integer/)
   })
+
+  it('rejects a negative or non-integer snapshotMaxConcepts', async () => {
+    await expect(mount({ snapshotMaxConcepts: -1 })).rejects.toThrow(/snapshotMaxConcepts must be a non-negative/)
+    await expect(mount({ snapshotMaxConcepts: 2.5 })).rejects.toThrow(/non-negative safe integer/)
+  })
 })
 
 describe('prompt guidance', () => {
@@ -103,6 +116,18 @@ describe('catalogue injection', () => {
     expect(injected).toHaveLength(1)
     expect(injected[0]).toMatch(/OKF knowledge bundle — 1 concept/)
     expect(injected[0]).toMatch(/metrics\/revenue — Revenue \[Metric, unverified\]/)
+  })
+
+  it('swaps the full list for a retrieval pointer once the bundle exceeds snapshotMaxConcepts', async () => {
+    await mount({ snapshotMaxConcepts: 2 })
+    for (const id of ['metrics/a', 'metrics/b', 'metrics/c']) {
+      await ctx.okf.writeConcept(id, { frontmatter: { type: 'Metric', title: id }, body: 'x\n', actor: 'dsh/t' })
+    }
+    const injected = await fire(agentFor(Session.create(SessionId('s2b'))), 1)
+    expect(injected).toHaveLength(1)
+    expect(injected[0]).toMatch(/OKF knowledge bundle — 3 concept\(s\)\. Too many to list here/)
+    expect(injected[0]).toMatch(/okf_retrieve_context/)
+    expect(injected[0]).not.toMatch(/- metrics\/a —/)
   })
 
   it('passes a reject decision straight through', async () => {

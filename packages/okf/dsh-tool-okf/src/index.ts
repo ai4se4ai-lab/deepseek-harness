@@ -10,6 +10,10 @@
  * - `okf_write_concept` — create or update a concept; `generated` is stamped,
  *   the no-shrink guard runs, and `index.md` / `log.md` are regenerated.
  * - `okf_verify_concept` — append a `verified: { by, at }` event (SPEC §5.2).
+ * - `okf_retrieve_context` — ranked, chain-verified, budget-packed context for a
+ *   question, from the app's `POST /api/okf/retrieve`. Registered only when
+ *   `config.retrieveUrl` is set (the DSH agent runs in a separate container from
+ *   that endpoint — see `docs/architecture/okf-retrieval.md` §8).
  *
  * `okf_attest` (SPEC §10) is registered separately by
  * `@mindportalix/dsh-okf-attest` when that engine is deployed.
@@ -21,7 +25,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { JsonValue } from '@deepseek-ai/dsh-session'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { formatAgentActor, type TrustTier } from '@mindportalix/dsh-okf-core'
 import type { ConceptFilter, ConceptSummary } from '@mindportalix/dsh-okf-bundle'
@@ -46,12 +50,30 @@ export interface Config {
   producer: string
   /** The version half of the machine actor string. Set from the deployment's build id. */
   version: string
+  /**
+   * Absolute URL of the app's `POST /api/okf/retrieve`. When set, the
+   * `okf_retrieve_context` tool is registered and calls it; when unset the tool
+   * is absent (the graph-aware retriever lives in the app, not the harness —
+   * `docs/architecture/okf-retrieval.md` §8). Cross-container auth is the
+   * operator's responsibility: supply a service credential via {@link retrieveAuthHeader}.
+   */
+  retrieveUrl: string
+  /** Raw value for an `Authorization` header sent with each retrieve call (e.g. `Bearer <token>`). Empty = none. */
+  retrieveAuthHeader: string
+  /** Default token budget for `okf_retrieve_context` when the model does not pass one. */
+  retrieveBudget: number
+  /** Timeout for the retrieve call, in milliseconds. */
+  retrieveTimeoutMs: number
 }
 
 /** Schemastery validation for {@link Config}. */
 export const Config: z<Config> = z.object({
   producer: z.string().default('dsh'),
   version: z.string().default('unversioned'),
+  retrieveUrl: z.string().default(''),
+  retrieveAuthHeader: z.string().default(''),
+  retrieveBudget: z.number().default(8000),
+  retrieveTimeoutMs: z.number().default(15000),
 })
 
 /** One line per concept for the overview / search results. */
@@ -292,9 +314,101 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
 
+  if (config.retrieveUrl.length > 0) {
+    ctx.tools.register(defineTool({
+      name: 'okf_retrieve_context',
+      description:
+        'Pull the most relevant knowledge for a question from the OKF bundle: seeds by meaning and name, '
+        + 'walks the concept graph, verifies every supporting fact through the 4-gate chain (dropping '
+        + 'deprecated / tampered concepts), and packs the result into a token budget. Prefer this over '
+        + 'okf_search_concepts when you have a real question rather than a keyword. Each returned block '
+        + 'carries its concept id, trust state, and why it was included.',
+      parameters: {
+        query: { type: 'string', required: true, description: 'The question you are about to answer.' },
+        concept_id: { type: 'string', description: 'Anchor the search on this concept id (bundle path, no `.md`).' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Restrict seeds to concepts carrying every tag.' },
+        type: { type: 'string', description: 'Restrict seeds to this frontmatter `type`.' },
+        budget: { type: 'integer', description: 'Token budget for the packed context.' },
+        depth: { type: 'integer', description: 'Graph-walk hop limit (0–6, default 3).' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            context: { type: 'string', required: true },
+            blocks: { type: 'array', required: true, items: { type: 'json' } },
+            usable: { type: 'array', required: true, items: { type: 'string' } },
+            rejected: { type: 'array', required: true, items: { type: 'json' } },
+            trust_chain: { type: 'json', required: true },
+            degraded: { type: 'json', required: true },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: (value.blocks as unknown[]).length === 0
+            ? String(value.context || 'No chain-usable OKF concepts matched.')
+            : String(value.context),
+        }],
+      },
+      async execute(args) {
+        const body: Record<string, unknown> = { query: String(args.query) }
+        if (typeof args.concept_id === 'string') body.conceptId = args.concept_id
+        if (Array.isArray(args.tags)) body.tags = args.tags.filter((t): t is string => typeof t === 'string')
+        if (typeof args.type === 'string') body.type = args.type
+        body.budget = typeof args.budget === 'number' ? args.budget : config.retrieveBudget
+        if (typeof args.depth === 'number') body.depth = args.depth
+        const data = await callRetrieve(config, body)
+        return {
+          context: typeof data.context === 'string' ? data.context : '',
+          blocks: Array.isArray(data.blocks) ? data.blocks.map(asJson) : [],
+          usable: Array.isArray(data.usable) ? data.usable.map(String) : [],
+          rejected: Array.isArray(data.rejected) ? data.rejected.map(asJson) : [],
+          trust_chain: asJson(data.trustChain ?? {}),
+          degraded: asJson(data.degraded ?? {}),
+        }
+      },
+    }))
+  }
+
   // `okf_attest` (OKF SPEC §10) is registered by @mindportalix/dsh-okf-attest
   // when that engine is mounted — it needs a shell/runtime this package does
   // not depend on. Absent it, the agent simply has no attestation tool.
+}
+
+/**
+ * POST the retrieve request to the app endpoint. Maps a network failure,
+ * timeout, non-2xx status, or non-JSON body to an `OKF_TOOL_FAILED` HarnessError
+ * — the agent then answers without the OKF context rather than crashing.
+ */
+async function callRetrieve(config: Config, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), config.retrieveTimeoutMs)
+  let response: Response
+  try {
+    response = await fetch(config.retrieveUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(config.retrieveAuthHeader.length > 0 ? { authorization: config.retrieveAuthHeader } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new HarnessError(`okf_retrieve_context could not reach the retrieval endpoint: ${reason}`, 'OKF_TOOL_FAILED')
+  } finally {
+    clearTimeout(timer)
+  }
+  if (!response.ok) {
+    throw new HarnessError(`okf_retrieve_context endpoint returned HTTP ${response.status}`, 'OKF_TOOL_FAILED')
+  }
+  try {
+    return await response.json() as Record<string, unknown>
+  } catch {
+    throw new HarnessError('okf_retrieve_context endpoint returned a non-JSON body', 'OKF_TOOL_FAILED')
+  }
 }
 
 async function readConceptOrThrow(ctx: Context, id: unknown): ReturnType<Context['okf']['readConcept']> {

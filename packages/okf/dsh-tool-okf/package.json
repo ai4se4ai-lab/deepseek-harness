@@ -26,6 +26,7 @@
   "license": "MIT",
   "dependencies": {
     "@deepseek-ai/schemastery": "workspace:^",
+    "@deepseek-ai/dsh-util-values": "workspace:^",
     "@mindportalix/dsh-okf-core": "workspace:^"
   },
   "peerDependencies": {

@@ -18,7 +18,13 @@
       "path": "../../../vendor/schemastery"
     },
     {
-      "path": "../../host/apiproxy"
+      "path": "../../api/session-controller/tsconfig.host.json"
+    },
+    {
+      "path": "../../api/workspace-controller/tsconfig.host.json"
+    },
+    {
+      "path": "../../host/directory-picker"
     },
     {
       "path": "../../core/session"
@@ -30,7 +36,7 @@
       "path": "../../util/home-paths"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../../typert/protocol"
     },
     {
       "path": "../dsh-tenant-context"

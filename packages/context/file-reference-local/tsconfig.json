@@ -24,10 +24,16 @@
       "path": "../../core/tools"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
+      "path": "../../fs/fs"
+    },
+    {
+      "path": "../../fs/tool-fs"
     },
     {
       "path": "../file-reference"
+    },
+    {
+      "path": "../workspace-upload"
     }
   ]
 }
