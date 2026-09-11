@@ -310,6 +310,25 @@ describe('connection node half', () => {
     await dispose()
   })
 
+  // MINDPORTALIX-TENANT-ISOLATION: a request that resolved a tenant already
+  // passed dsh-proxy.js's own ticket/cookie authentication, so DSH's
+  // browser-only process-token cookie (unreachable through the proxy) is a
+  // redundant gate this process must not also demand.
+  it('bypasses browser-session authentication for both /api and the index once a tenant is bound', async () => {
+    const { ctx, connection, dispose } = await mounted({ trustedHosts: ['harness.example'] })
+    // Stands in for `@mindportalix/dsh-tenant-context`'s TenantContextService:
+    // requestRejection/authorizeIndex only read `ctx.get('tenantContext') !== undefined`.
+    ctx.provide('tenantContext', {} as never)
+
+    expect(connection.requestRejection(fakeRequest({ host: 'harness.example' }))).toBeUndefined()
+
+    const { response, state } = fakeResponse()
+    const authorized = connection.authorizeIndex(fakeRequest({ host: 'harness.example' }, '/'), response)
+    expect(authorized).toBe(true)
+    expect(state.status).toBeUndefined()
+    await dispose()
+  })
+
   it('provides a disposable dedicated RPC channel', async () => {
     const ctx = new Context()
     const routes: WebRoute[] = []

@@ -99,11 +99,23 @@ export class HostConnectionService extends Service implements HostConnectionHand
   /** Apply the configured Host/Origin fence, then browser authentication. */
   requestRejection(request: ConnectionTrustRequest): ConnectionRequestRejection {
     if (!isTrustedApiRequest(request, this.trustedHosts)) return 403
+    // MINDPORTALIX-TENANT-ISOLATION: the process-launch-token cookie exchange
+    // below assumes a browser that can visit the URL `dsh web` printed to its
+    // own stdout — unreachable here, since `docker-compose.dsh.yml` never
+    // publishes this process's port and that stdout is never surfaced past
+    // `docker compose logs`. Every request that reaches this process already
+    // passed dsh-proxy.js's own ticket/cookie authentication (see that file's
+    // header comment), so a bound tenant is already proof of a trusted caller
+    // and this redundant, browser-only gate can never be satisfied by one.
+    if (this.ctx.get('tenantContext') !== undefined) return undefined
     return this.browserAuth.isAuthenticated(request) ? undefined : 401
   }
 
   /** Authenticate an index request through the process-token exchange or cookie. */
   authorizeIndex(request: ConnectionIndexRequest, response: ConnectionIndexResponse): boolean {
+    // MINDPORTALIX-TENANT-ISOLATION: see requestRejection above — the same
+    // trusted-proxy reasoning applies to serving index.html itself.
+    if (this.ctx.get('tenantContext') !== undefined) return true
     return this.browserAuth.authorizeIndex(request, response)
   }
 
