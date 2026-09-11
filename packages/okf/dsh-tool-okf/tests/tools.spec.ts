@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdir } from 'node:fs/promises'
 import { Context } from '@deepseek-ai/cordis'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import OkfBundle from '@mindportalix/dsh-okf-bundle'
@@ -33,7 +33,7 @@ async function setup(): Promise<void> {
 }
 
 function run(name: string, args: unknown) {
-  return ctx.tools.execute({ signal, callId: CallId(`c-${++call}`), name, arguments: args })
+  return ctx.tools.execute({ signal, callId: ToolCallId(`c-${++call}`), name, arguments: args })
 }
 
 function text(result: { content: { type: string; text?: string }[] }): string {
@@ -255,7 +255,7 @@ describe('okf_retrieve_context', () => {
   let rctx: Context
   let rcall = 0
   const rrun = (name: string, args: unknown) =>
-    rctx.tools.execute({ signal, callId: CallId(`r-${++rcall}`), name, arguments: args })
+    rctx.tools.execute({ signal, callId: ToolCallId(`r-${++rcall}`), name, arguments: args })
 
   async function mountRetrieve(over: Partial<toolOkf.Config> = {}): Promise<void> {
     rctx = new Context()
