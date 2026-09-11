@@ -21,7 +21,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: pulls the conversation plugin's Context merge (ctx.conversation).
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {
   ClientSessionContext, InputTriggerServiceContract, InputTriggerSource, TokenSpan,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'

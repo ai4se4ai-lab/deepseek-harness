@@ -1,6 +1,6 @@
 /** Root/subcall Tool composition with one keyed atomic dispatch path. */
 import { memo, useMemo, type ReactNode } from 'react'
-import type { ToolCallBlock } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { ToolCallOwnerProps, ToolTreeProps } from '../contract/slots.ts'
 import { GenericToolCard } from './toolviews/GenericToolCard.tsx'
 import css from './ToolCallTree.module.css'
@@ -10,18 +10,13 @@ function callName(node: ToolCallBlock): string {
   return 'kind' in node ? node.call?.name ?? '' : node.name
 }
 
-/** Owner-supplied `openFile`, already gated to `undefined` when this deployment cannot open a path natively. */
-type GatedOpenFile = ((path: string) => void) | undefined
-
 /** One atomic call dispatched through the Tool-owned keyed slot. */
 const ToolCall = memo(function ToolCall({
-  renderSlot, callId, toolName, block, openFile, selected, cwd, home, inspectCall, t, children,
-}: Pick<ToolTreeProps, 'renderSlot' | 'cwd' | 'inspectCall' | 't'> & {
+  renderSlot, callId, toolName, block, openFile, cwd, home, inspectCall, loadImage, t, children,
+}: Pick<ToolTreeProps, 'renderSlot' | 'openFile' | 'cwd' | 'inspectCall' | 'loadImage' | 't'> & {
   callId: string
   toolName: string
   block: ToolCallBlock
-  openFile: GatedOpenFile
-  selected: boolean
   home?: string | undefined
   children?: ReactNode
 }) {
@@ -32,14 +27,14 @@ const ToolCall = memo(function ToolCall({
     openFile,
     cwd,
     home,
+    loadImage,
     inspect: () => { inspectCall(callId) },
-  }), [callId, toolName, block, openFile, cwd, home, inspectCall])
+  }), [callId, toolName, block, openFile, cwd, home, loadImage, inspectCall])
   return (
     <div
       className={css.callRow}
       data-chat-anchor-key={`call:${callId}`}
       data-chat-call-id={callId}
-      data-selected={selected || undefined}
     >
       {renderSlot('tool.call.toolview', owner, {
         entryKey: toolName,
@@ -51,11 +46,10 @@ const ToolCall = memo(function ToolCall({
 })
 
 const ToolCallBranch = memo(function ToolCallBranch({
-  renderSlot, block, selectedCallId, cwd, home, openFile, inspectCall, t,
-}: Pick<ToolTreeProps, 'renderSlot' | 'selectedCallId' | 'cwd' | 'inspectCall' | 't'> & {
+  renderSlot, block, cwd, home, openFile, inspectCall, loadImage, t,
+}: Pick<ToolTreeProps, 'renderSlot' | 'cwd' | 'openFile' | 'inspectCall' | 'loadImage' | 't'> & {
   block: ToolCallBlock
   home?: string | undefined
-  openFile: GatedOpenFile
 }) {
   return (
     <ToolCall
@@ -64,10 +58,10 @@ const ToolCallBranch = memo(function ToolCallBranch({
       toolName={callName(block)}
       block={block}
       openFile={openFile}
-      selected={block.callId === selectedCallId}
       cwd={cwd}
       home={home}
       inspectCall={inspectCall}
+      loadImage={loadImage}
       t={t}
     >
       {block.subCalls.length > 0 ? (
@@ -77,11 +71,11 @@ const ToolCallBranch = memo(function ToolCallBranch({
               key={child.callId}
               renderSlot={renderSlot}
               block={child}
-              selectedCallId={selectedCallId}
               cwd={cwd}
               home={home}
               openFile={openFile}
               inspectCall={inspectCall}
+              loadImage={loadImage}
               t={t}
             />
           ))}
@@ -98,20 +92,19 @@ const ToolCallBranch = memo(function ToolCallBranch({
  * @returns the Tool call tree.
  */
 export function ToolCallTree({
-  renderSlot, node, selectedCallId, cwd, openFile, inspectCall, useHostDescription, isLoopback, t,
+  renderSlot, node, cwd, openFile, inspectCall, loadImage, useHostInfo, t,
 }: ToolTreeProps) {
-  const home = useHostDescription(description => description?.home)
-  const canOpenPath = isLoopback && useHostDescription(description => description?.canOpenPath === true)
+  const home = useHostInfo(info => info.home)
   const block = node.data.root
   return (
     <ToolCallBranch
       renderSlot={renderSlot}
       block={block}
-      selectedCallId={selectedCallId}
       cwd={cwd}
       home={home}
-      openFile={canOpenPath ? openFile : undefined}
+      openFile={openFile}
       inspectCall={inspectCall}
+      loadImage={loadImage}
       t={t}
     />
   )

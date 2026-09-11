@@ -17,7 +17,7 @@
  */
 
 import { existsSync } from 'node:fs'
-import { grantArgs as landlockGrantArgs } from '@deepseek-ai/node-addon-landlock-run'
+import { grantArgs as landlockGrantArgs } from '@deepseek-ai/node-addon-system/landlock-run'
 import type { SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 
 export { seatbeltProfileArgs } from '@deepseek-ai/dsh-sandbox-local/src/profiles.ts'

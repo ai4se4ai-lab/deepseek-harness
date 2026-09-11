@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import AgentRegistry, { agentEvents, Inbox, type Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { agentEvents, type Agent, type Inbox } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import OkfBundle from '@mindportalix/dsh-okf-bundle'
 import * as okfContext from '../src/index.ts'
@@ -32,7 +32,15 @@ function agentFor(session: Session): Agent {
     id: SessionId('agent'),
     options: {},
     session,
-    inbox: new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
+    inbox: {
+      nextTurn: [], nextStep: [],
+      clear: () => {},
+      append: () => {},
+      prepend: () => {},
+      replace: () => false,
+      remove: () => false,
+      splice: () => [],
+    } satisfies Inbox,
     status: 'running',
     ctx: new Context(),
     send: () => {},

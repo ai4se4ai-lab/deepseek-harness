@@ -8,7 +8,7 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
-import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {
   CandidateRequest, ClientSessionContext, InputTriggerSource, TokenSpan,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
@@ -21,7 +21,7 @@ const session: ClientSessionContext = { sessionId: sid('target') }
 const span = (start: number, end: number): TokenSpan => ({ start, end, draftRev: 0 })
 
 function request(query: string): CandidateRequest {
-  return { query, quoted: false, position: 'leading', signal: new AbortController().signal }
+  return { query, quoted: false, position: 'leading', drilled: false, signal: new AbortController().signal }
 }
 
 /** A minimal SessionInput fake: mutable draft, snapshot read, and captured notices. */
@@ -125,7 +125,7 @@ describe('pick', () => {
     const click = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => undefined)
     const { source } = await bench()
     const outcome = source.onPick({
-      candidate: { name: 'upload' }, session, position: 'leading', via: 'menu', span: span(0, 7),
+      candidate: { name: 'upload' }, session, position: 'leading', via: 'menu', action: 'pick', span: span(0, 7),
     })
     expect(outcome).toBe('handled')
     expect(click).toHaveBeenCalledTimes(1)
@@ -136,7 +136,7 @@ describe('pick', () => {
     const composer = fakeComposer('look at /upload')
     const { source } = await bench(putOk, composer)
     source.onPick({
-      candidate: { name: 'upload' }, session, position: 'inline', via: 'menu', span: span(8, 15),
+      candidate: { name: 'upload' }, session, position: 'inline', via: 'menu', action: 'pick', span: span(8, 15),
     })
     chooseFile(new File([new Uint8Array(12)], 'report.pdf', { type: 'application/pdf' }))
     await vi.waitFor(() => { expect(composer.draft).toContain('@files/report.pdf') })
@@ -150,7 +150,7 @@ describe('pick', () => {
     const composer = fakeComposer('/upload')
     const { source } = await bench(putOk, composer)
     source.onPick({
-      candidate: { name: 'upload' }, session, position: 'leading', via: 'menu', span: span(0, 7),
+      candidate: { name: 'upload' }, session, position: 'leading', via: 'menu', action: 'pick', span: span(0, 7),
     })
     chooseFile(undefined)
     await vi.waitFor(() => { expect(composer.draft).toBe('') })
@@ -163,7 +163,7 @@ describe('pick', () => {
     const composer = fakeComposer('/upload')
     const { source } = await bench(put, composer)
     source.onPick({
-      candidate: { name: 'upload' }, session, position: 'leading', via: 'menu', span: span(0, 7),
+      candidate: { name: 'upload' }, session, position: 'leading', via: 'menu', action: 'pick', span: span(0, 7),
     })
     chooseFile(new File([new Uint8Array(11 * 1024 * 1024)], 'big.bin'))
     await vi.waitFor(() => { expect(composer.notices.at(-1)?.level).toBe('error') })
@@ -179,7 +179,7 @@ describe('pick', () => {
     const composer = fakeComposer('/upload')
     const { source } = await bench(put, composer)
     source.onPick({
-      candidate: { name: 'upload' }, session, position: 'leading', via: 'menu', span: span(0, 7),
+      candidate: { name: 'upload' }, session, position: 'leading', via: 'menu', action: 'pick', span: span(0, 7),
     })
     chooseFile(new File([new Uint8Array(8)], 'x.txt'))
     await vi.waitFor(() => {

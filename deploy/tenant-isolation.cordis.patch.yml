@@ -39,10 +39,12 @@
     - id: tenant-context
       name: '@mindportalix/dsh-tenant-context'
 
-    # Wraps ctx.apiProxy.sessions.{create,list,search} and
-    # ctx.apiProxy.workspace.* to clamp every cwd/workspaceId to the caller's
-    # $DSH_HOME/tenants/<tenantId> root. Requires apiProxy + workspaceRegistry,
-    # both already mounted by the base/web-app bundle layers beneath this one.
+    # Wraps ctx.sessionController.{list,search,create,...} and
+    # ctx.workspaceController.* (plus ctx.directoryPickerController.*) to clamp
+    # every cwd/workspaceId/path to the caller's $DSH_HOME/tenants/<tenantId>
+    # root. Requires those Services + workspaceRegistry, all already mounted by
+    # the base/web-app bundle layers beneath this one. See that package's
+    # README for the known gap in Remote-stream (WebSocket-mux) scoping.
     - id: tenant-session-guard
       name: '@mindportalix/dsh-tenant-session-guard'
 
@@ -93,8 +95,8 @@
 
 # Close the one escalation path this task's session-guard cannot intercept at
 # the RPC layer: session.create's wire payload carries no mode/danger-full-access
-# field at all (packages/host/apiproxy/src/api/sessions.schema.ts) — that mode is
-# reached only by selecting a permission preset
+# field at all (SessionCreateRequest, packages/api/session-controller/src/types.ts)
+# — that mode is reached only by selecting a permission preset
 # (packages/interaction/permission-presets), and once granted it BYPASSES
 # sandbox confinement entirely by upstream design
 # (ConfinedSandboxMode = Exclude<SandboxMode, 'danger-full-access'> in

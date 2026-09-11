@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import OkfBundle from '@mindportalix/dsh-okf-bundle'
@@ -174,7 +174,7 @@ describe('attestConcept placeholder', () => {
 
 describe('okf_attest tool', () => {
   function run(args: unknown) {
-    return ctx.tools.execute({ signal, callId: CallId(`c-${++call}`), name: 'okf_attest', arguments: args })
+    return ctx.tools.execute({ signal, callId: ToolCallId(`c-${++call}`), name: 'okf_attest', arguments: args })
   }
   function text(result: { content: { type: string; text?: string }[] }): string {
     return result.content.filter(b => b.type === 'text').map(b => b.text).join('\n')

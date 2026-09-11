@@ -72,7 +72,8 @@ function validate(config: Config): void {
 
 /** The latest okf-context injection time in a session, or undefined. */
 function lastInjectionTime(agent: Agent): number | undefined {
-  for (const event of [...agent.session.events].reverse()) {
+  // oxlint-disable-next-line typescript/no-deprecated -- existing scan, migrated across the rename; not a new dependency.
+  for (const event of [...agent.session.snapshotEvents()].reverse()) {
     if (event.type === 'user/message'
       && event.data.source.kind === 'plugin'
       && event.data.source.plugin === name) {

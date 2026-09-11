@@ -13,6 +13,7 @@
     { "path": "../../llm/llm" },
     { "path": "../../core/tools" },
     { "path": "../../core/agent" },
+    { "path": "../../util/values" },
     { "path": "../../runtime-diagnostics/invariants" }
   ]
 }

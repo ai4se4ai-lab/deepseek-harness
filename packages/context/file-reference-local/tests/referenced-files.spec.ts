@@ -27,7 +27,7 @@ const PDF_FIXTURE = fileURLToPath(new URL('../../../fs/tool-fs/tests/fixtures/te
 async function harness(): Promise<Context> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
-  await ctx.plugin(SystemPrompt, { persona: '' })
+  await ctx.plugin(SystemPrompt, { personaPrefix: '' })
   await ctx.plugin(ToolRegistry)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(LocalFileSystem, { cwd: '/' })
@@ -60,7 +60,7 @@ const snapshot = async (ctx: Context, signal?: AbortSignal): Promise<string> =>
 
 describe('collectReferencedPaths', () => {
   const session = (texts: Array<{ text: string; plugin?: boolean }>): Parameters<typeof collectReferencedPaths>[0] => ({
-    events: texts.map((t, i) => ({
+    snapshotEvents: () => texts.map((t, i) => ({
       seq: i,
       type: 'user/message',
       data: {
@@ -268,7 +268,6 @@ describe('ReferencedFileInliner', () => {
 /** A provider whose primitives can be armed to fail, for the load()-path branches. */
 class ArmedFs extends FileSystem {
   mode: 'ok' | 'resolve-throws' | 'stat-throws' | 'no-root' | 'too-large' | 'read-throws' | 'sizeless' = 'ok'
-  constructor(ctx: Context) { super(ctx) }
   override async resolve(path: string): Promise<FsTarget> {
     if (this.mode === 'resolve-throws') throw new Error('bad path')
     if (this.mode === 'no-root' && path === '.') throw new Error('no root')
@@ -293,13 +292,14 @@ class ArmedFs extends FileSystem {
   override async listDir(): Promise<never[]> { return [] }
   override writeText(): never { throw new Error('unused') }
   override editText(): never { throw new Error('unused') }
+  override readByteRange(): never { throw new Error('unused') }
 }
 
 describe('ReferencedFileInliner — backend failure paths', () => {
   async function armed(mode: ArmedFs['mode']): Promise<string> {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
-    await ctx.plugin(SystemPrompt, { persona: '' })
+    await ctx.plugin(SystemPrompt, { personaPrefix: '' })
     await ctx.plugin(ToolRegistry)
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(ArmedFs)

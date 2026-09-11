@@ -84,8 +84,10 @@ function neutralizeBraces(text: string): string {
 export function collectReferencedPaths(session: Session, limit: number): string[] {
   const seen = new Set<string>()
   const paths: string[] = []
-  for (let i = session.events.length - 1; i >= 0 && paths.length < limit; i -= 1) {
-    const event = session.events[i]
+  // oxlint-disable-next-line typescript/no-deprecated -- existing scan, migrated across the rename; not a new dependency.
+  const events = session.snapshotEvents()
+  for (let i = events.length - 1; i >= 0 && paths.length < limit; i -= 1) {
+    const event = events[i]
     if (event?.type !== 'user/message' || event.data.source.kind !== 'user') continue
     const text = event.data.content
       .filter((block): block is { type: 'text'; text: string } => block.type === 'text')

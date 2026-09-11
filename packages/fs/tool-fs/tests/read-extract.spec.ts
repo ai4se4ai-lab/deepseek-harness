@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { FileSystem, FsError, FsTargetKey, FsVersion } from '@deepseek-ai/dsh-fs'
@@ -65,6 +65,7 @@ class OneFileFs extends FileSystem {
   override async listDir(): Promise<FsDirEntry[]> { return [] }
   override writeText(): never { throw new Error('unused') }
   override editText(): never { throw new Error('unused') }
+  override readByteRange(): never { throw new Error('unused') }
 }
 
 async function setup(config: OneFileConfig, toolFsConfig: Record<string, unknown> = {}): Promise<{ ctx: Context; fs: OneFileFs }> {
@@ -79,7 +80,7 @@ async function setup(config: OneFileConfig, toolFsConfig: Record<string, unknown
 
 let n = 0
 const read = (ctx: Context, file_path: string, extra: Record<string, unknown> = {}) =>
-  ctx.tools.execute({ signal: new AbortController().signal, callId: CallId(`c${++n}`), name: 'read', arguments: { file_path, ...extra } })
+  ctx.tools.execute({ signal: new AbortController().signal, callId: ToolCallId(`c${++n}`), name: 'read', arguments: { file_path, ...extra } })
 
 const bodyText = (r: { content: { type: string; text?: string }[] }): string =>
   r.content.filter(b => b.type === 'text').map(b => b.text).join('')
