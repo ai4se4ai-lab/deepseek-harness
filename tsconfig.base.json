@@ -459,7 +459,8 @@
       "@deepseek-ai/dsh-workflow/invariant": ["./packages/workflow/workflow/src/invariant.ts"],
       "@deepseek-ai/dsh-workflow-worker-thread": ["./packages/workflow/workflow-worker-thread/src"],
       "@deepseek-ai/dsh-workspace": ["./packages/workspace/workspace/src"],
-      "@deepseek-ai/dsh-workspace/invariant": ["./packages/workspace/workspace/src/invariant.ts"]
+      "@deepseek-ai/dsh-workspace/invariant": ["./packages/workspace/workspace/src/invariant.ts"],
+      "@deepseek-ai/dsh-workspace-upload": ["./packages/context/workspace-upload/src"]
       // END generated package aliases
       ,
       // MINDPORTALIX-TENANT-ISOLATION: a deliberately different npm scope
@@ -469,7 +470,8 @@
       // the fork-owned Open Knowledge Format integration under packages/okf/*.
       "@mindportalix/*": [
         "./packages/tenant/*/src",
-        "./packages/okf/*/src"
+        "./packages/okf/*/src",
+        "./packages/graph/*/src"
       ]
     }
   }

@@ -121,3 +121,27 @@
       workspace-write:
         sandbox: workspace-write
         approval: ask
+
+# Runs one node of a MindPortalix agent-architecture graph as a DSH agent turn.
+# The MindPortalix app compiles the user's Mermaid canvas into a LangGraph and
+# keeps every graph decision (gates, reviewer cycles, HITL, loop bounds, and
+# which predecessor output each node reads); this row gives one node a real
+# agent for one turn, carrying the prompt, model, token ceiling, and tool grant
+# its front-matter declared.
+#
+# Host-plane deliberately: it owns the cross-session node-session store and an
+# HTTP route, both of which outlive any one session, so it belongs in this
+# composition rather than in an agent preset (packages/preset/agent-presets'
+# mount() rejects a preset service without an `isolate` realm, and a store read
+# by more than one session must not be per-session anyway).
+#
+# It reads tenant identity through ctx.tenantContext like every other row here
+# and fails closed without it, so a request that somehow reached this container
+# without the proxy's trusted header creates no session and no directory.
+# agentPreset names the preset each node composes from — `standard` carries the
+# fs/bash/web tools and the OKF group a node's `tools:` grant draws on.
+- insert:
+    - id: graph-node-runner
+      name: '@mindportalix/dsh-graph-node-runner'
+      config:
+        agentPreset: standard

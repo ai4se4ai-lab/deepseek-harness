@@ -103,6 +103,7 @@
     "@mindportalix/dsh-okf-bundle": "workspace:^",
     "@mindportalix/dsh-okf-context": "workspace:^",
     "@mindportalix/dsh-tool-okf": "workspace:^",
+    "@mindportalix/dsh-graph-node-runner": "workspace:^",
     "commander": "^15.0.0",
     "js-yaml": "^4.2.0",
     "node-addon-require-builtin": "^0.1.4",

@@ -275,6 +275,7 @@
     { "path": "./packages/okf/dsh-okf-context" },
     { "path": "./packages/okf/dsh-okf-attest" },
     { "path": "./packages/okf/dsh-okf-dataplex" },
+    { "path": "./packages/graph/dsh-graph-node-runner" },
     { "path": "./packages/shell/bash-sandbox" },
     { "path": "./packages/shell/tool-bash" },
     { "path": "./packages/fs/fs" },
